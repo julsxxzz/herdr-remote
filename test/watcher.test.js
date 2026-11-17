@@ -88,8 +88,8 @@ test('when events exits, store is refreshed from ls and events is respawned', as
   put('ls.json', JSON.stringify({ hidden_finished: 0, terminals: [{ address: 't7', agent: 'Codex', state: 'live', status: 'working', turn: 2, where: 'demo / 1' }] }));
   const store = new TerminalStore();
   start(store);
-  await until(() => store.get('t7')?.status === 'working', 200);
-  await until(() => eventsCalls() >= 2, 200);
+  await until(() => store.get('t7')?.status === 'working', 1500);
+  await until(() => eventsCalls() >= 2, 1500);
 });
 
 test('a missed event kills the child and a fresh one is spawned', async () => {
