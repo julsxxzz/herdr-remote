@@ -4,13 +4,14 @@
 import { api, terminalPath, signedOut } from './api.js';
 import { el, statusIcon, statusKey, STATUS_LABEL, itemName, itemDetails } from './list.js';
 import {
-  MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel,
-  pinchScale, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
+  MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel, zoomAriaLabel,
+  pinchStep, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
 } from './zoom.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 200;
 const CTRL_C_WINDOW_MS = 2000;
+const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
@@ -47,12 +48,15 @@ export function openTermView({ root, address, item }) {
   const headTop = el('div', { class: 'head-top' });
   const headDetails = el('div', { class: 'head-details' });
   const headMeta = el('div', { class: 'row-meta' });
+  const header = el('header', { class: 'term-head' },
+    el('a', { class: 'icon-btn back', href: '#/', 'aria-label': 'Back to list' }, el('span', { 'aria-hidden': 'true', text: '‹' })),
+    el('div', { class: 'head-body' }, headTop, headDetails, headMeta));
+
+  // ---- zoom bar: its own row above the terminal, so the header keeps its full width ----
   const zoomOutBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom out', text: '−' });
   const fitBtn = el('button', { type: 'button', class: 'chip-btn zoom-fit', 'aria-label': 'Fit to width' });
   const zoomInBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom in', text: '+' });
-  const header = el('header', { class: 'term-head' },
-    el('a', { class: 'icon-btn back', href: '#/', 'aria-label': 'Back to list' }, el('span', { 'aria-hidden': 'true', text: '‹' })),
-    el('div', { class: 'head-body' }, headTop, headDetails, headMeta),
+  const zoomRow = el('div', { class: 'zoom-row' },
     el('div', { class: 'zoom', role: 'group', 'aria-label': 'Zoom' }, zoomOutBtn, fitBtn, zoomInBtn));
 
   function renderHeader() {
@@ -100,6 +104,7 @@ export function openTermView({ root, address, item }) {
 
   function renderZoom() {
     fitBtn.textContent = zoomLabel(zoom);
+    fitBtn.setAttribute('aria-label', zoomAriaLabel(zoom, scale));
     zoomOutBtn.disabled = scale <= MIN_ZOOM;
     zoomInBtn.disabled = scale >= MAX_ZOOM;
   }
@@ -119,28 +124,30 @@ export function openTermView({ root, address, item }) {
     renderZoom();
   }
 
-  // Applies a new zoom state and scrolls so the content at (fromX, fromY) — area
-  // coordinates, before the change — ends up at (toX, toY). Defaults to the area's centre.
-  function applyZoom(next, anchor = {}) {
-    const fromScale = anchor.fromScale ?? scale;
-    const scrollLeft = anchor.scrollLeft ?? area.scrollLeft;
-    const scrollTop = anchor.scrollTop ?? area.scrollTop;
-    const fromX = anchor.fromX ?? area.clientWidth / 2;
-    const fromY = anchor.fromY ?? area.clientHeight / 2;
+  // Applies a new zoom state and scrolls (from the live offsets) so the content at
+  // (fromX, fromY) — area coordinates — stays there. Defaults to the area's centre.
+  function applyZoom(next, { fromX = area.clientWidth / 2, fromY = area.clientHeight / 2 } = {}) {
+    const fromScale = scale;
+    const { scrollLeft, scrollTop } = area;
     zoom = next;
     layout();
     if (!naturalSize()) return;
-    const pos = anchoredScroll({
-      fromScale, toScale: scale, scrollLeft, scrollTop,
-      fromX, fromY, toX: anchor.toX ?? fromX, toY: anchor.toY ?? fromY,
-    });
+    const pos = anchoredScroll({ fromScale, toScale: scale, scrollLeft, scrollTop, fromX, fromY, toX: fromX, toY: fromY });
     area.scrollLeft = pos.scrollLeft;
     area.scrollTop = pos.scrollTop;
   }
 
-  function commitZoom(next, anchor) {
-    applyZoom(next, anchor);
-    saveZoomPref(storage(), zoom);
+  const saveZoom = () => saveZoomPref(storage(), zoom);
+  let saveTimer = null;
+  function saveZoomSoon() {
+    clearTimeout(saveTimer);
+    // Flush first: a still-pending frame holds wheel input that isn't applied yet.
+    saveTimer = setTimeout(() => { saveTimer = null; flushFrame(); saveZoom(); }, WHEEL_SAVE_MS);
+  }
+
+  function commitZoom(next) {
+    applyZoom(next);
+    saveZoom();
   }
 
   zoomOutBtn.addEventListener('click', () => commitZoom(zoomOut(scale)));
@@ -152,45 +159,97 @@ export function openTermView({ root, address, item }) {
     return { x: x - r.left, y: y - r.top };
   };
 
+  // Gestures fire faster than frames: collect input, lay out at most once per frame.
+  let frame = 0;
+  let pendingWheel = null; // { delta, x, y }
+  let pinch = null; // { ids: [id, id], last: { dist, x, y }, next: same | null }
+  const scheduleFrame = () => { if (!frame) frame = requestAnimationFrame(runFrame); };
+  function flushFrame() {
+    if (!frame) return;
+    cancelAnimationFrame(frame);
+    runFrame();
+  }
+  function runFrame() {
+    frame = 0;
+    if (pendingWheel) {
+      const w = pendingWheel;
+      pendingWheel = null;
+      applyZoom({ mode: 'manual', zoom: wheelScale(scale, w.delta) }, { fromX: w.x, fromY: w.y });
+    }
+    if (pinch?.next && naturalSize()) {
+      const prev = pinch.last;
+      pinch.last = pinch.next;
+      pinch.next = null;
+      // Incremental and from the live scroll offsets, so a native pan the browser made
+      // meanwhile (non-cancelable touches) adds to the zoom instead of being overwritten.
+      const step = pinchStep({ scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, prev, next: pinch.last });
+      zoom = { mode: 'manual', zoom: step.scale };
+      layout();
+      area.scrollLeft = step.scrollLeft;
+      area.scrollTop = step.scrollTop;
+    }
+  }
+
   // Desktop: Ctrl/⌘ + wheel (and trackpad pinch, which Chrome reports the same way).
   area.addEventListener('wheel', (ev) => {
     if (!(ev.ctrlKey || ev.metaKey)) return; // plain wheel keeps scrolling
     ev.preventDefault();
     const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? area.clientHeight : 1;
     const p = areaPoint(ev.clientX, ev.clientY);
-    commitZoom({ mode: 'manual', zoom: wheelScale(scale, ev.deltaY * lines) }, { fromX: p.x, fromY: p.y });
+    pendingWheel = { delta: (pendingWheel?.delta ?? 0) + ev.deltaY * lines, x: p.x, y: p.y };
+    scheduleFrame();
+    saveZoomSoon();
   }, { passive: false });
 
   // Phone: two-finger pinch. touch-action on .term-area leaves one-finger pan to the
-  // browser and stops page zoom; the pinch is measured from where it started.
-  let pinch = null;
-  function fingers(touches) {
-    const [a, b] = touches;
+  // browser and stops page zoom. The pinch follows two specific touches by identifier.
+  function measure(a, b) {
     const p = areaPoint((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
     return { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), x: p.x, y: p.y };
   }
+  function findTouch(list, id) {
+    for (const t of list) if (t.identifier === id) return t;
+    return null;
+  }
+  function pinchPair(list) {
+    const a = findTouch(list, pinch.ids[0]);
+    const b = findTouch(list, pinch.ids[1]);
+    return a && b ? [a, b] : null;
+  }
+  // (Re)bases the pinch on the first two touches: nothing jumps, the next move is measured from here.
+  function startPinch(list) {
+    flushFrame();
+    const [a, b] = list;
+    pinch = { ids: [a.identifier, b.identifier], last: measure(a, b), next: null };
+  }
+  function endPinch() {
+    flushFrame();
+    pinch = null;
+    saveZoom();
+  }
+
   area.addEventListener('touchstart', (ev) => {
-    if (ev.touches.length !== 2) return;
+    if (ev.touches.length < 2) return;
     if (ev.cancelable) ev.preventDefault();
-    const f = fingers(ev.touches);
-    pinch = { scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, ...f };
+    if (pinch && pinchPair(ev.touches)) return; // an extra finger: keep following the pair
+    startPinch(ev.touches);
   }, { passive: false });
   area.addEventListener('touchmove', (ev) => {
-    if (!pinch || ev.touches.length !== 2) return;
+    if (!pinch) return;
+    const pair = pinchPair(ev.touches);
+    if (!pair) return;
     if (ev.cancelable) ev.preventDefault();
-    const f = fingers(ev.touches);
-    applyZoom({ mode: 'manual', zoom: pinchScale(pinch.scale, pinch.dist, f.dist) }, {
-      fromScale: pinch.scale, scrollLeft: pinch.scrollLeft, scrollTop: pinch.scrollTop,
-      fromX: pinch.x, fromY: pinch.y, toX: f.x, toY: f.y,
-    });
+    pinch.next = measure(...pair);
+    scheduleFrame();
   }, { passive: false });
-  const endPinch = (ev) => {
-    if (!pinch || ev.touches.length >= 2) return;
-    pinch = null;
-    saveZoomPref(storage(), zoom);
+  // On window: a finger may lift outside the area.
+  const onTouchEnd = (ev) => {
+    if (!pinch || pinchPair(ev.touches)) return;
+    if (ev.touches.length >= 2) startPinch(ev.touches); // 3 → 2 fingers: re-base on the remaining pair
+    else endPinch();
   };
-  area.addEventListener('touchend', endPinch);
-  area.addEventListener('touchcancel', endPinch);
+  window.addEventListener('touchend', onTouchEnd);
+  window.addEventListener('touchcancel', onTouchEnd);
 
   const resizeObserver = new ResizeObserver(() => layout());
   resizeObserver.observe(area);
@@ -373,7 +432,7 @@ export function openTermView({ root, address, item }) {
   }
 
   const view = el('section', { class: 'view view-term' },
-    header, banner, area,
+    header, banner, zoomRow, area,
     el('div', { class: 'controls' }, feedback, keybar, form));
 
   renderHeader();
@@ -392,6 +451,10 @@ export function openTermView({ root, address, item }) {
       clearTimeout(reconnectTimer);
       disarmCtrlC();
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+      if (saveTimer) { clearTimeout(saveTimer); flushFrame(); saveZoom(); }
+      cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       const sock = ws;
       ws = null;

@@ -218,7 +218,11 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .term-head .back { flex: none; }
 .head-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 11px; }
-.zoom { flex: none; display: flex; gap: 2px; margin-top: 4px; }
+.zoom-row {
+  flex: none; display: flex; justify-content: flex-end;
+  padding: 2px 8px; background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.zoom { display: flex; gap: 2px; }
 .zoom .chip-btn { padding: 0 6px; font-variant-numeric: tabular-nums; }
 .zoom .chip-btn:not(.zoom-fit) { font-size: 20px; line-height: 1; }
 .zoom .zoom-fit { min-width: 56px; }
