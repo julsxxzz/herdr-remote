@@ -12,15 +12,15 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-cfg-'));
 
 test('configDir: win32 uses APPDATA', () => {
   assert.equal(
-    configDir({ env: { APPDATA: 'C:\A' }, platform: 'win32' }),
-    path.join('C:\A', 'herdr-remote'),
+    configDir({ env: { APPDATA: 'C:\\A' }, platform: 'win32' }),
+    path.join('C:\\A', 'herdr-remote'),
   );
 });
 
 test('configDir: HERDR_REMOTE_HOME overrides, home arg wins over both', () => {
-  const env = { APPDATA: 'C:\A', HERDR_REMOTE_HOME: 'C:\H' };
-  assert.equal(configDir({ env, platform: 'win32' }), 'C:\H');
-  assert.equal(configDir({ env, platform: 'win32', home: 'C:\X' }), 'C:\X');
+  const env = { APPDATA: 'C:\\A', HERDR_REMOTE_HOME: 'C:\\H' };
+  assert.equal(configDir({ env, platform: 'win32' }), 'C:\\H');
+  assert.equal(configDir({ env, platform: 'win32', home: 'C:\\X' }), 'C:\\X');
 });
 
 test('configDir: non-windows uses XDG_CONFIG_HOME or ~/.config', () => {
