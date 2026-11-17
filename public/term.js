@@ -7,9 +7,11 @@ import {
   MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel, zoomAriaLabel,
   pinchStep, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
 } from './zoom.js';
+import { splitPan, releaseVelocity, flingStep, FRAME_MS, FLING_STOP, VELOCITY_WINDOW_MS } from './scroll.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
-const HISTORY = 200;
+const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
+const SCROLLBACK = 2000; // xterm keeps history + what arrives live
 const CTRL_C_WINDOW_MS = 2000;
 const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
 
@@ -199,19 +201,93 @@ export function openTermView({ root, address, item }) {
     }
   }
 
-  // Desktop: Ctrl/⌘ + wheel (and trackpad pinch, which Chrome reports the same way).
-  area.addEventListener('wheel', (ev) => {
-    if (!(ev.ctrlKey || ev.metaKey)) return; // plain wheel keeps scrolling
-    ev.preventDefault();
-    const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? area.clientHeight : 1;
-    const p = areaPoint(ev.clientX, ev.clientY);
-    pendingWheel = { delta: (pendingWheel?.delta ?? 0) + ev.deltaY * lines, x: p.x, y: p.y };
-    scheduleFrame();
-    saveZoomSoon();
-  }, { passive: false });
+  // ---- scrolling: one range, xterm scrollback above + the area's own scroll below ----
+  let lineCarry = 0; // fractional scrollback px not yet worth a whole line
+  function rowHeightPx() { // one terminal row in screen px at the current zoom
+    const screen = term?.element?.querySelector('.xterm-screen');
+    return screen && term.rows ? (screen.offsetHeight / term.rows) * scale : 0;
+  }
+  // Scrolls the view by (dx, dy) screen px, positive = towards right/bottom.
+  // Returns whether anything moved (a fling stops at the ends).
+  function panBy(dx, dy) {
+    let moved = false;
+    if (dx) {
+      const before = area.scrollLeft;
+      area.scrollLeft = before + dx;
+      moved = area.scrollLeft !== before;
+    }
+    if (dy) {
+      const buf = term?.buffer.active;
+      const r = splitPan({
+        delta: dy, scrollTop: area.scrollTop, maxScrollTop: area.scrollHeight - area.clientHeight,
+        linesAbove: buf ? buf.viewportY : 0, linesBelow: buf ? buf.baseY - buf.viewportY : 0,
+        lineHeight: rowHeightPx(), carry: lineCarry,
+      });
+      lineCarry = r.carry;
+      area.scrollTop = r.scrollTop;
+      if (r.lines) term.scrollLines(r.lines); // scrolling up keeps xterm from following new output
+      moved = moved || Math.abs(r.rest) < Math.abs(dy);
+    }
+    return moved;
+  }
 
-  // Phone: two-finger pinch. touch-action on .term-area leaves one-finger pan to the
-  // browser and stops page zoom. The pinch follows two specific touches by identifier.
+  // Fling: keeps panning after a quick swipe, slowing down each frame.
+  let fling = null; // { vx, vy, t } in px per frame
+  let flingFrame = 0;
+  function stopFling() {
+    cancelAnimationFrame(flingFrame);
+    flingFrame = 0;
+    fling = null;
+  }
+  function startFling(vx, vy) {
+    stopFling();
+    if (Math.abs(vx) < FLING_STOP && Math.abs(vy) < FLING_STOP) return;
+    fling = { vx, vy, t: null };
+    flingFrame = requestAnimationFrame(flingTick);
+  }
+  function flingTick(now) {
+    flingFrame = 0;
+    if (!fling) return;
+    const dt = fling.t === null ? FRAME_MS : Math.min(100, Math.max(0, now - fling.t));
+    fling.t = now;
+    const k = dt / FRAME_MS;
+    const moved = panBy(fling.vx * k, fling.vy * k);
+    fling.vx = flingStep(fling.vx, dt);
+    fling.vy = flingStep(fling.vy, dt);
+    if (!moved || (!fling.vx && !fling.vy)) return stopFling();
+    flingFrame = requestAnimationFrame(flingTick);
+  }
+
+  // Wheel, in the capture phase so xterm doesn't also scroll its scrollback on its own.
+  // Plain wheel walks the same range as a touch pan; Ctrl/⌘ + wheel (and a trackpad
+  // pinch, which Chrome reports the same way) zooms.
+  area.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stopFling();
+    if (ev.ctrlKey || ev.metaKey) {
+      const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? area.clientHeight : 1;
+      const p = areaPoint(ev.clientX, ev.clientY);
+      pendingWheel = { delta: (pendingWheel?.delta ?? 0) + ev.deltaY * lines, x: p.x, y: p.y };
+      scheduleFrame();
+      saveZoomSoon();
+      return;
+    }
+    const unit = ev.deltaMode === 1 ? (rowHeightPx() || 16) : ev.deltaMode === 2 ? area.clientHeight : 1;
+    let dx = ev.deltaX * unit;
+    let dy = ev.deltaY * unit;
+    if (ev.shiftKey && !dx) { dx = dy; dy = 0; }
+    panBy(dx, dy);
+  }, { capture: true, passive: false });
+
+  // Touch: .term-area has touch-action: none, so we own every gesture on it (no native
+  // scroll, no page zoom, no pull-to-refresh). One finger pans + flings; two fingers pinch,
+  // following two specific touches by identifier.
+  let pan = null; // { id, x, y, samples: [{ t, x, y }] }
+  function startPan(t) {
+    const now = performance.now();
+    pan = { id: t.identifier, x: t.clientX, y: t.clientY, samples: [{ t: now, x: t.clientX, y: t.clientY }] };
+  }
   function measure(a, b) {
     const p = areaPoint((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
     return { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), x: p.x, y: p.y };
@@ -237,29 +313,72 @@ export function openTermView({ root, address, item }) {
     saveZoom();
   }
 
+  // Capture phase + stopPropagation: xterm's own touch scrolling never sees these.
   area.addEventListener('touchstart', (ev) => {
-    if (ev.touches.length < 2) return;
-    if (ev.cancelable) ev.preventDefault();
-    if (pinch && pinchPair(ev.touches)) return; // an extra finger: keep following the pair
-    startPinch(ev.touches);
-  }, { passive: false });
+    ev.stopPropagation();
+    stopFling(); // any new touch stops a fling
+    if (ev.touches.length >= 2) {
+      if (ev.cancelable) ev.preventDefault();
+      pan = null;
+      if (pinch && pinchPair(ev.touches)) return; // an extra finger: keep following the pair
+      startPinch(ev.touches);
+    } else if (!pinch) {
+      startPan(ev.touches[0]);
+    }
+  }, { capture: true, passive: false });
   area.addEventListener('touchmove', (ev) => {
-    if (!pinch) return;
-    const pair = pinchPair(ev.touches);
-    if (!pair) return;
+    ev.stopPropagation();
     if (ev.cancelable) ev.preventDefault();
-    pinch.native = !ev.cancelable; // the browser owns the pan for this move
-    pinch.next = measure(...pair);
-    scheduleFrame();
-  }, { passive: false });
-  // On window: a finger may lift outside the area.
+    if (pinch) {
+      const pair = pinchPair(ev.touches);
+      if (!pair) return;
+      // With touch-action: none our moves are cancelable, so this stays false in practice.
+      pinch.native = !ev.cancelable;
+      pinch.next = measure(...pair);
+      scheduleFrame();
+      return;
+    }
+    const t = pan && findTouch(ev.touches, pan.id);
+    if (!t) return;
+    panBy(pan.x - t.clientX, pan.y - t.clientY); // content follows the finger
+    const now = performance.now();
+    pan.x = t.clientX;
+    pan.y = t.clientY;
+    pan.samples.push({ t: now, x: t.clientX, y: t.clientY });
+    while (pan.samples.length > 2 && pan.samples[0].t < now - 2 * VELOCITY_WINDOW_MS) pan.samples.shift();
+  }, { capture: true, passive: false });
+  // Window, capture phase: sees every lift, even though the area stops propagation.
   const onTouchEnd = (ev) => {
-    if (!pinch || pinchPair(ev.touches)) return;
-    if (ev.touches.length >= 2) startPinch(ev.touches); // 3 → 2 fingers: re-base on the remaining pair
-    else endPinch();
+    if (pinch) {
+      if (pinchPair(ev.touches)) return;
+      if (ev.touches.length >= 2) { startPinch(ev.touches); return; } // 3 → 2 fingers: re-base
+      endPinch();
+      if (ev.touches.length === 1) startPan(ev.touches[0]); // the remaining finger keeps panning
+      return;
+    }
+    if (!pan || findTouch(ev.touches, pan.id)) return;
+    const { vx, vy } = releaseVelocity(pan.samples, performance.now());
+    pan = null;
+    if (ev.type === 'touchend') startFling(-vx * FRAME_MS, -vy * FRAME_MS);
   };
-  window.addEventListener('touchend', onTouchEnd);
-  window.addEventListener('touchcancel', onTouchEnd);
+  window.addEventListener('touchend', onTouchEnd, true);
+  window.addEventListener('touchcancel', onTouchEnd, true);
+
+  // ---- "↓ Latest": shown while xterm is scrolled up into its history ----
+  const latestBtn = el('button', { type: 'button', class: 'latest', 'aria-label': 'Jump to latest output', hidden: true },
+    el('span', { 'aria-hidden': 'true', text: '↓ Latest' }));
+  function updateLatest() {
+    const b = term?.buffer.active;
+    latestBtn.hidden = !b || b.viewportY >= b.baseY;
+  }
+  latestBtn.addEventListener('click', () => {
+    stopFling();
+    lineCarry = 0;
+    term?.scrollToBottom();
+    area.scrollTop = area.scrollHeight;
+    updateLatest();
+  });
+  const stage = el('div', { class: 'term-stage' }, area, latestBtn);
 
   const resizeObserver = new ResizeObserver(() => layout());
   resizeObserver.observe(area);
@@ -267,18 +386,23 @@ export function openTermView({ root, address, item }) {
   function onSize(cols, rows) {
     if (!term) {
       term = new window.Terminal({
-        cols, rows, disableStdin: true, scrollback: 1000, fontSize: 14, cursorBlink: false,
+        cols, rows, disableStdin: true, scrollback: SCROLLBACK, fontSize: 14, cursorBlink: false,
         fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, "Roboto Mono", "Droid Sans Mono", monospace',
         theme: THEME,
       });
       term.open(host);
       resizeObserver.observe(term.element);
+      // While scrolled up, xterm keeps the position as output arrives; only the button changes.
+      term.onScroll(updateLatest);
+      term.onWriteParsed(updateLatest);
     } else {
       if (resetOnSize) term.reset();
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
     }
     resetOnSize = false;
+    lineCarry = 0;
     layout();
+    updateLatest();
   }
 
   function connect() {
@@ -442,7 +566,7 @@ export function openTermView({ root, address, item }) {
   }
 
   const view = el('section', { class: 'view view-term' },
-    header, banner, zoomRow, area,
+    header, banner, zoomRow, stage,
     el('div', { class: 'controls' }, feedback, keybar, form));
 
   renderHeader();
@@ -461,8 +585,9 @@ export function openTermView({ root, address, item }) {
       clearTimeout(reconnectTimer);
       disarmCtrlC();
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('touchend', onTouchEnd);
-      window.removeEventListener('touchcancel', onTouchEnd);
+      window.removeEventListener('touchend', onTouchEnd, true);
+      window.removeEventListener('touchcancel', onTouchEnd, true);
+      stopFling();
       if (pinch) endPinch(); // flushes and saves a pinch still in progress
       if (saveTimer) { clearTimeout(saveTimer); flushFrame(); saveZoom(); }
       cancelAnimationFrame(frame);

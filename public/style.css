@@ -31,6 +31,7 @@ html, body {
   font: 16px/1.4 var(--font);
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none; /* no pull-to-refresh reloading the app */
 }
 body { overflow-x: hidden; }
 
@@ -238,11 +239,21 @@ button, input, textarea { font: inherit; color: inherit; }
 .banner-warn { background: color-mix(in srgb, var(--amber) 14%, var(--surface)); color: var(--amber); }
 .banner-ended { background: var(--surface-2); color: var(--text); }
 
+.term-stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .term-area {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--term-bg);
   scrollbar-gutter: stable;
-  /* One finger pans natively; two-finger pinch is handled in term.js, never as page zoom. */
-  touch-action: pan-x pan-y;
+  /* term.js owns every touch here: pan into xterm's history, fling, pinch. */
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+.latest {
+  position: absolute; right: 20px; bottom: 12px; z-index: 1;
+  min-height: var(--tap); min-width: var(--tap); padding: 0 16px;
+  border: 1px solid var(--blue); border-radius: 999px;
+  background: var(--surface-2); color: var(--text);
+  font-size: 14px; font-weight: 600; cursor: pointer; touch-action: manipulation;
+  box-shadow: 0 2px 10px rgb(0 0 0 / .45);
 }
 .term-area.scroll-x { overflow-x: auto; }
 .term-wrap { overflow: hidden; }
