@@ -6,7 +6,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { createHc, isValidAddress, isValidKeyName } from '../src/hc.js';
+import { createHc, HC_IDENTITY_ENV, isValidAddress, isValidKeyName } from '../src/hc.js';
 
 const fakeHcPath = fileURLToPath(new URL('./fixtures/fake-hc.mjs', import.meta.url));
 let dir;
@@ -182,3 +182,39 @@ test('B8: a late close after the grace does not settle twice', async () => {
   child.emit('close', 0); // must be ignored, not throw
   child.emit('error', new Error('late'));
 });
+
+const identity = { HC_TERMINAL_ID: 't9', HC_TERMINAL_SOCKET: 'sock', HC_SCOPE: 'scope' };
+const envSeen = (cmd) => fs.readFileSync(path.join(dir, 'env.jsonl'), 'utf8').split('\n').filter(Boolean)
+  .map((l) => JSON.parse(l)).find((e) => e.argv[0] === cmd);
+const waitFor = async (fn) => { for (let i = 0; i < 100; i++) { try { return fn(); } catch { await new Promise((r) => setTimeout(r, 50)); } } return fn(); };
+
+for (const source of ['option', 'process.env']) {
+  test(`children never inherit hc terminal identity (${source})`, async () => {
+    const saved = { ...process.env };
+    const base = { ...process.env, FAKE_HC_DIR: dir, HERDR_TEST_KEEP: 'yes' };
+    let h;
+    if (source === 'option') {
+      h = createHc({ command: process.execPath, prefixArgs: [fakeHcPath], env: { ...base, ...identity } });
+    } else {
+      Object.assign(process.env, base, identity);
+      h = createHc({ command: process.execPath, prefixArgs: [fakeHcPath] });
+    }
+    put('events.jsonl', '{"seq":1}\n');
+    put('screen.bin', 'x');
+    const kids = [];
+    try {
+      await h.send('t3', 'hi');
+      kids.push(h.observe('t3'), h.events());
+      for (const cmd of ['send', 'attach', 'events']) {
+        const seen = await waitFor(() => { const e = envSeen(cmd); assert.ok(e); return e; });
+        assert.deepEqual(seen.hcEnv, {});
+        assert.equal(seen.keep, 'yes');
+      }
+    } finally {
+      for (const k of kids) k.kill();
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+    assert.deepEqual(HC_IDENTITY_ENV, ['HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE']);
+  });
+}

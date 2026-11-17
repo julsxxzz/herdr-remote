@@ -3,6 +3,15 @@ import { spawn } from 'node:child_process';
 const ADDRESS_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/;
 const KEY_RE = /^[a-z0-9][a-z0-9+_-]{0,19}$/i;
 
+// Terminal identity vars: if inherited, hc treats our send/keys as agent-to-agent messages.
+export const HC_IDENTITY_ENV = ['HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE'];
+
+function cleanEnv(env = process.env) {
+  const out = { ...env };
+  for (const k of HC_IDENTITY_ENV) delete out[k];
+  return out;
+}
+
 export const isValidAddress = (s) => typeof s === 'string' && ADDRESS_RE.test(s);
 export const isValidKeyName = (s) => typeof s === 'string' && KEY_RE.test(s);
 
@@ -28,7 +37,7 @@ export function createHc({
 } = {}) {
   // Always an argv array, never a shell.
   const spawnHc = (args, stdio, signal) =>
-    spawnImpl(command, [...prefixArgs, ...args], { env, stdio, windowsHide: true, signal });
+    spawnImpl(command, [...prefixArgs, ...args], { env: cleanEnv(env), stdio, windowsHide: true, signal });
 
   // `signal` aborts the command: the child is killed and the promise rejects with an AbortError.
   function run(args, { timeoutMs = defaultTimeoutMs, signal } = {}) {

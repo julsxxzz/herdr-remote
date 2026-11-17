@@ -109,6 +109,7 @@ The web address and the login change. Run `herdr-remote stop`, re-run `npm run s
 - **"port 4780 already in use — is herdr-remote already running?"** in the log: another copy (or another program) holds the port. Run `herdr-remote stop`, or free the port. The supervisor does not restart in this case either.
 - **"herdr-remote is running — stop it first: herdr-remote stop"** from setup: stop the server, run setup, then start it again.
 - **No push:** the address must be the https `ts.net` one (HTTPS certificates enabled); notification permission must be allowed in Android/Chrome site settings; desk mode must be off; the matching trigger must be on in Settings; and you must have tapped Enable notifications on this device after the last setup change.
+- **Messages arrive as if from an agent terminal, or new terminals get a parent:** herdr-remote strips `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET` and `HC_SCOPE` from every `hc` it runs, so messages are sent as from a plain client even when herdr-remote is started inside a Herdr terminal.
 - **`hc` not found:** put herdr-core's folder (default `%LOCALAPPDATA%\Programs\herdr-core\`) on PATH, or re-run setup and give the full path to `hc`.
 - **Start-at-login does not start it:** run `node src/cli.js install-task` again, then check `schtasks /Query /TN herdr-remote /V /FO LIST` (its "Run As User" must be your account) and the log file.
 
