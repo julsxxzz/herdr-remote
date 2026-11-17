@@ -137,3 +137,32 @@ test('sessionCookie and readSessionToken', () => {
   assert.equal(readSessionToken('a=1'), null);
   assert.equal(readSessionToken(undefined), null);
 });
+
+test('hashPin rejects non-strings and NFC-normalizes', () => {
+  assert.throws(() => hashPin(123456), TypeError);
+  assert.throws(() => hashPin(undefined), TypeError);
+  const h = hashPin('café123');
+  assert.equal(verifyPin('café123', h), true);
+});
+
+test('session with missing/non-numeric lastSeen fails closed', () => {
+  const { s, state } = mk();
+  const tok = s.create();
+  const key = Object.keys(state.sessions)[0];
+  delete state.sessions[key].lastSeen;
+  assert.equal(s.check(tok), false);
+  assert.deepEqual(state.sessions, {});
+  const tok2 = s.create();
+  state.sessions[Object.keys(state.sessions)[0]].lastSeen = 'x';
+  assert.equal(s.check(tok2), false);
+});
+
+test('tailscale rejects empty/missing allowedLogin; unknown access acts as tailscale', () => {
+  const h = { 'tailscale-user-login': 'owner@example.com' };
+  assert.equal(checkIdentity(h, { access: 'tailscale', allowedLogin: '' }).ok, false);
+  assert.equal(checkIdentity(h, { access: 'tailscale' }).ok, false);
+  assert.equal(checkIdentity({ 'tailscale-user-login': '' }, { access: 'tailscale', allowedLogin: '' }).ok, false);
+  const cfg = { access: 'bogus', allowedLogin: 'owner@example.com' };
+  assert.equal(checkIdentity(h, cfg).ok, true);
+  assert.equal(checkIdentity({}, cfg).ok, false);
+});

@@ -14,8 +14,9 @@ function safeEqual(a, b) {
 }
 
 export function hashPin(pin) {
+  if (typeof pin !== 'string') throw new TypeError('PIN must be a string');
   const salt = randomBytes(SALT_LEN);
-  const hash = scryptSync(String(pin), salt, KEY_LEN, SCRYPT);
+  const hash = scryptSync(pin.normalize('NFC'), salt, KEY_LEN, SCRYPT);
   return `scrypt$${salt.toString('base64')}$${hash.toString('base64')}`;
 }
 
@@ -26,7 +27,7 @@ export function verifyPin(pin, stored) {
   const salt = Buffer.from(parts[1], 'base64');
   const expected = Buffer.from(parts[2], 'base64');
   if (salt.length === 0 || expected.length !== KEY_LEN) return false;
-  const actual = scryptSync(pin, salt, KEY_LEN, SCRYPT);
+  const actual = scryptSync(pin.normalize('NFC'), salt, KEY_LEN, SCRYPT);
   return timingSafeEqual(actual, expected);
 }
 
@@ -72,7 +73,7 @@ export function createSessions({ state, save, now = Date.now }) {
       if (!Object.hasOwn(state.sessions, key)) return false;
       const entry = state.sessions[key];
       const t = now();
-      if (t - entry.lastSeen >= SESSION_TTL_MS) {
+      if (!Number.isFinite(entry.lastSeen) || !(t - entry.lastSeen < SESSION_TTL_MS)) {
         delete state.sessions[key];
         save();
         return false;
