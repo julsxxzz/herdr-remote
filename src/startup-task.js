@@ -17,9 +17,11 @@ const LEGACY_XML_NAME = 'herdr-remote-task.xml';
 export const isNpxCachePath = (p) => /[\\/]_npx[\\/]/i.test(String(p ?? ''));
 
 export const NPX_CACHE_HINT = 'remote-for-herdr is running from npx\'s temporary cache, which npm may delete, '
-  + 'so start-at-login is not installed from here. Install it for good, then run setup again:\n'
+  + 'so start-at-login is not installed from here. To keep it, install it and add the task (your setup is kept; '
+  + 'restart stops the copy started from npx and starts it through the task):\n'
   + '  npm i -g remote-for-herdr\n'
-  + '  remote-for-herdr setup';
+  + '  remote-for-herdr install-task\n'
+  + '  remote-for-herdr restart';
 
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]

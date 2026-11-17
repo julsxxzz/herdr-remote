@@ -11,7 +11,9 @@ import {
   superviseServer, stopRunning, claimPidFile, alreadyRunningMessage, createLog, EXIT_SETUP_REQUIRED,
 } from './supervisor.js';
 import { installTask, uninstallTask } from './startup-task.js';
-import { getStatus, formatStatus, restart, migrateFromHerdrRemote, cliCommand } from './control.js';
+import { getStatus, formatStatus, restart, migrateFromHerdrRemote, cliCommand, legacyPending } from './control.js';
+
+const MIGRATING_COMMANDS = ['setup', 'start', 'restart', 'install-task'];
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
@@ -24,7 +26,7 @@ Usage:
                                                          run the server (restarts on crash unless --foreground;
                                                          --log writes its output to <home>\\logs\\server.log)
   remote-for-herdr stop [--home <dir>]                   stop the running server
-  remote-for-herdr restart [--home <dir>]                stop, then start it again with the start-at-login task
+  remote-for-herdr restart [--home <dir>]                stop, then start it again (via the login task if installed)
   remote-for-herdr install-task [--home <dir>]           start at Windows login (Task Scheduler)
   remote-for-herdr uninstall-task [--home <dir>]         remove the login task
   remote-for-herdr --help
@@ -126,8 +128,11 @@ async function main(argv) {
     args: rest,
     options: { foreground: { type: 'boolean' }, log: { type: 'boolean' }, proxy: { type: 'boolean' }, home: { type: 'string' } },
   });
-  // One-time move from herdr-remote (the old name) to the new default config folder.
-  await migrateFromHerdrRemote({ home: values.home, cliPath: CLI_PATH });
+  // One-time move from herdr-remote (the old name) to the new default config folder, only for the
+  // commands that set up or start it ("status" just mentions it, below).
+  if (MIGRATING_COMMANDS.includes(command)) {
+    await migrateFromHerdrRemote({ home: values.home, cliPath: CLI_PATH, restartFollows: command === 'restart' });
+  }
   const home = configDir({ home: values.home });
   const legacyHome = explicitHome({ home: values.home }) ? null : legacyConfigDir();
   const cmd = cliCommand(CLI_PATH);
@@ -173,6 +178,9 @@ async function main(argv) {
       await restart({ home, cliPath: CLI_PATH });
       return;
     case 'status':
+      if (legacyPending({ home: values.home })) {
+        console.log(`Old herdr-remote config found in ${legacyConfigDir()}; run "${cmd} restart" to move it.`);
+      }
       console.log(formatStatus(await getStatus({ home }), { cmd }));
       return;
     case 'install-task':

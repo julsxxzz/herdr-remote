@@ -293,7 +293,17 @@ const answers = (atLogin) => scripted([
   [/tailscale serve/i, ['n']],
   [/start at login/i, [atLogin]],
 ]);
-const GLOBAL_CLI = 'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\remote-for-herdr\\src\\cli.js';
+// A global npm install layout in a temp dir: <prefix>\remote-for-herdr.cmd next to <prefix>\node_modules.
+function installLayout({ global }) {
+  const prefix = tmp();
+  const cli = path.join(prefix, 'node_modules', 'remote-for-herdr', 'src', 'cli.js');
+  fs.mkdirSync(path.dirname(cli), { recursive: true });
+  fs.writeFileSync(cli, '');
+  if (global) fs.writeFileSync(path.join(prefix, 'remote-for-herdr.cmd'), '');
+  return cli;
+}
+const GLOBAL_CLI = installLayout({ global: true });
+const LOCAL_CLI = installLayout({ global: false });
 const NPX_CLI = 'C:\\Users\\me\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\remote-for-herdr\\src\\cli.js';
 
 test('npm: accepting start-at-login runs the new task right away, then prints the phone URL and its QR code', async () => {
@@ -304,10 +314,14 @@ test('npm: accepting start-at-login runs the new task right away, then prints th
   await runSetup({
     isServerRunning: notRunning, home, prompt: answers('y').prompt, exec, log: out.log, cliPath: GLOBAL_CLI,
     installTask: async () => {}, startDetached: () => assert.fail('the task is installed'),
-    waitUntilRunning: async (port) => { waited.push(port); return true; }, qr: (url) => `QR<${url}>`,
+    waitUntilRunning: async (o) => { waited.push(o); return true; }, qr: (url) => `QR<${url}>`,
   });
-  assert.deepEqual(calls.filter((c) => c[0] === 'schtasks'), [['schtasks', '/Run', '/TN', 'remote-for-herdr']]);
-  assert.deepEqual(waited, [4780]);
+  // /End first: a launcher in its restart pause would make Task Scheduler ignore the /Run.
+  assert.deepEqual(calls.filter((c) => c[0] === 'schtasks'), [['schtasks', '/End', '/TN', 'remote-for-herdr'], ['schtasks', '/Run', '/TN', 'remote-for-herdr']]);
+  assert.equal(waited.length, 1);
+  assert.equal(waited[0].home, home);
+  assert.equal(waited[0].port, 4780);
+  assert.equal(typeof waited[0].since, 'number'); // its server must have written server.pid after the /Run
   assert.deepEqual(out.lines.slice(-3), [
     'remote-for-herdr is running (start-at-login task).',
     'Open on your phone: https://box.example.ts.net',
@@ -348,6 +362,7 @@ test('npm: declining start-at-login prints the exact start command for how it wa
   const cases = [
     [GLOBAL_CLI, 'remote-for-herdr start'],
     [NPX_CLI, 'npx remote-for-herdr start'],
+    [LOCAL_CLI, 'npx remote-for-herdr start'],
     ['C:\\src\\rfh\\src\\cli.js', 'node "C:\\src\\rfh\\src\\cli.js" start'],
   ];
   for (const [cliPath, cmd] of cases) {
@@ -374,4 +389,30 @@ test('npm: a server that does not come up is reported with the log path and the 
   });
   assert.ok(out.lines.some((l) => l.startsWith('remote-for-herdr did not start:')
     && l.includes(path.join(home, 'logs', 'server.log')) && l.endsWith('remote-for-herdr start')), out.lines.join('\n'));
+});
+
+test('owner decision: start-at-login defaults to yes (empty answer installs and starts it)', async () => {
+  const { exec } = stubExec();
+  let installed = 0;
+  let asked = '';
+  const base = answers('');
+  const prompt = async (q) => { if (/start at login/i.test(q)) asked = q; return base.prompt(q); };
+  await runSetup({
+    isServerRunning: notRunning, home: tmp(), prompt, exec, log: () => {}, cliPath: GLOBAL_CLI,
+    installTask: async () => { installed++; }, waitUntilRunning: async () => true, qr: () => '',
+  });
+  assert.match(asked, /\[Y\/n\] $/);
+  assert.equal(installed, 1);
+});
+
+test('fix: a detached start waits for the pid it started (not just any program on the port)', async () => {
+  const { exec } = stubExec();
+  const waited = [];
+  const { installTask } = await import('../src/startup-task.js');
+  await runSetup({
+    isServerRunning: notRunning, home: tmp(), prompt: answers('y').prompt, exec, log: () => {}, cliPath: NPX_CLI,
+    installTask, startDetached: () => ({ pid: 4321 }), waitUntilRunning: async (o) => { waited.push(o); return true; }, qr: () => '',
+  });
+  assert.equal(waited.length, 1);
+  assert.equal(waited[0].pid, 4321);
 });

@@ -5,7 +5,7 @@ import { hashPin, isAcceptablePin } from './auth.js';
 import { generateVapidKeys } from './push.js';
 import { runCommand, installTask as realInstallTask } from './startup-task.js';
 import {
-  CLI_PATH, cliCommand, qrText, runTaskAndWait, startDetached as realStartDetached, waitForPort,
+  CLI_PATH, cliCommand, qrText, runTaskAndWait, startDetachedAndWait, startDetached as realStartDetached, waitForServer,
 } from './control.js';
 
 export function parseTailscaleStatus(json) {
@@ -80,7 +80,7 @@ export async function runSetup({
   isServerRunning = portAnswers,
   cliPath = CLI_PATH,
   startDetached = realStartDetached,
-  waitUntilRunning = (port) => waitForPort(port),
+  waitUntilRunning = waitForServer,
   qr = qrText,
 }) {
   const dir = configDir({ home });
@@ -146,7 +146,7 @@ export async function runSetup({
     const r = await exec('tailscale', ['serve', '--bg', String(cfg.port)]);
     log(r.code === 0 ? 'tailscale serve is configured.' : `tailscale serve failed: ${(r.stderr || r.stdout).trim()}`);
   }
-  const atLogin = isYes(await prompt('Start at login (Windows scheduled task)? [y/N] '), false);
+  const atLogin = isYes(await prompt('Start at login (Windows scheduled task)? [Y/n] '), true);
   let taskInstalled = false;
   if (atLogin) {
     const legacyHome = explicitHome({ home }) ? null : legacyConfigDir();
@@ -160,11 +160,8 @@ export async function runSetup({
   const cmd = cliCommand(cliPath);
   if (atLogin) {
     let r;
-    if (taskInstalled) r = await runTaskAndWait({ exec, port: cfg.port, waitUntilRunning });
-    else {
-      startDetached({ home: dir, cliPath });
-      r = { ok: await waitUntilRunning(cfg.port), message: 'nothing answers on its port yet' };
-    }
+    if (taskInstalled) r = await runTaskAndWait({ exec, home: dir, port: cfg.port, waitUntilRunning });
+    else r = await startDetachedAndWait({ home: dir, port: cfg.port, cliPath, startDetachedImpl: startDetached, waitUntilRunning });
     log(r.ok ? `remote-for-herdr is running${taskInstalled ? ' (start-at-login task)' : ''}.`
       : `remote-for-herdr did not start: ${r.message}. Check ${path.join(path.resolve(dir), 'logs', 'server.log')}, then run: ${cmd} start`);
   } else {

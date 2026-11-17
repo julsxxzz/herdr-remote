@@ -39,7 +39,8 @@
     "start": "node src/cli.js start",
     "setup": "node src/cli.js setup",
     "dev": "node src/cli.js start --foreground --home .dev",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@xterm/xterm": "^6.0.0",

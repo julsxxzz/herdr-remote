@@ -233,7 +233,9 @@ test('npm: installTask refuses a cli inside the npx cache, before touching anyth
   const cliPath = 'C:\\Users\\me\\AppData\\Local\\npm-cache\\_npx\\1a2b3c\\node_modules\\remote-for-herdr\\src\\cli.js';
   await assert.rejects(
     installTask({ home, cliPath, exec, userId: USER }),
-    (e) => e.code === 'NPX_CACHE' && /npm i -g remote-for-herdr/.test(e.message) && /remote-for-herdr setup/.test(e.message),
+    // Not "setup" (it refuses while the server started from npx runs): install-task, then restart.
+    (e) => e.code === 'NPX_CACHE'
+      && e.message.endsWith('\n  npm i -g remote-for-herdr\n  remote-for-herdr install-task\n  remote-for-herdr restart'),
   );
   assert.deepEqual(calls, []);
   assert.equal(fs.existsSync(home), false);
