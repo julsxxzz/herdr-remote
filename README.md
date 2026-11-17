@@ -79,7 +79,8 @@ The phone can only reach the app while the PC is on and awake. Set Windows power
 ## Using it
 
 - Sessions needing you are at the top. Tap one for the live view.
-- A very wide terminal (say 200 columns) is shown at half size and you pan sideways; the minimum fit scale is 50%. Tap Fit to switch to 100% size, or turn the phone to landscape.
+- The live view starts fitted to the screen width. A very wide terminal (say 200 columns) is shown at half size and you pan sideways; the minimum fit scale is 50%. Turning the phone to landscape also helps.
+- Zoom with the buttons at the top right: `−` and `+` zoom out and in (25% to 200%), and the middle button shows the current zoom (`Fit`, or a percentage such as `80%`); tap it to fit the width again. You can also pinch with two fingers on the terminal; one finger still scrolls and pans. On a desktop browser, Ctrl + mouse wheel zooms. Whenever the terminal is wider than the screen, you pan sideways inside the terminal. Your zoom is remembered on each device.
 - Replies take about a second to show: each send starts a fresh `hc` process.
 - The text box refuses to send while the session shows a dialog (Herdr's safety). Answer dialogs with the key buttons.
 - The app never marks sessions as seen in Herdr, so things you handled from the phone may still look unread on the PC.
