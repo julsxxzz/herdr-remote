@@ -134,3 +134,69 @@ test('lsToTerminal maps an hc ls item', () => {
   assert.equal(item.tab, '1');
   assert.equal(item.turn, 4);
 });
+
+const detailed = (extra = {}) => ({
+  address: 't1',
+  state: 'live',
+  title: 'Ship issue 7',
+  records: { a: { app: 'claude-code', state: 'working', title: 'Analyse issue 7' } },
+  status: { app: 'claude-code', state: 'working', progress: 40, msg: 'Running tests' },
+  labels: { where: 'demo / 1' },
+  turn: 4,
+  ...extra,
+});
+
+test('toListItem carries title, activity, message and progress', () => {
+  const item = toListItem(detailed());
+  assert.equal(item.title, 'Ship issue 7');
+  assert.equal(item.activity, 'Analyse issue 7');
+  assert.equal(item.message, 'Running tests');
+  assert.equal(item.progress, 40);
+  assert.equal(item.status, 'working');
+});
+
+test('status.title wins over records for activity; empty values become null', () => {
+  const item = toListItem(detailed({ title: '', status: { app: 'x', state: 'working', title: 'From status' } }));
+  assert.equal(item.activity, 'From status');
+  assert.equal(item.title, null);
+  assert.equal(item.message, null);
+  const bare = toListItem({ address: 't2', state: 'live', status: null });
+  assert.deepEqual([bare.title, bare.activity, bare.message, bare.progress, bare.unread], [null, null, null, null, false]);
+});
+
+test('progress is clamped to 0..100 and non-numbers are null', () => {
+  const p = (progress) => toListItem(detailed({ status: { app: 'x', state: 'working', progress } })).progress;
+  assert.equal(p(250), 100);
+  assert.equal(p(-5), 0);
+  assert.equal(p(40.6), 41);
+  assert.equal(p('x'), null);
+  assert.equal(p(undefined), null);
+  assert.equal(p(NaN), null);
+});
+
+test('unread is true only when herdr.seen is behind turn', () => {
+  const u = (seen, turn) => toListItem(detailed({ turn, labels: seen === undefined ? {} : { 'herdr.seen': seen } })).unread;
+  assert.equal(u('3', 4), true);
+  assert.equal(u('4', 4), false);
+  assert.equal(u(4, 4), false);
+  assert.equal(u(undefined, 4), false);
+  assert.equal(u('abc', 4), false);
+});
+
+test('title and status events update get()', () => {
+  const s = new TerminalStore();
+  s.reset({ seq: 1, terminals: [detailed()] }, { emitTransitions: false });
+  s.apply({ type: 'title', terminal: 't1', seq: 2, data: { title: 'New title' } });
+  assert.equal(s.get('t1').title, 'New title');
+  s.apply({
+    type: 'status',
+    terminal: 't1',
+    seq: 3,
+    data: {
+      status: { app: 'claude-code', state: 'working', msg: 'Linting', progress: 80 },
+      records: { b: { app: 'claude-code', state: 'working', title: 'Fix lint' } },
+    },
+  });
+  const item = s.get('t1');
+  assert.deepEqual([item.activity, item.message, item.progress], ['Fix lint', 'Linting', 80]);
+});

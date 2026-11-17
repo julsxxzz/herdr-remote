@@ -12,6 +12,17 @@ export function displayAgent(t) {
   return AGENT_NAMES[name] ?? name;
 }
 
+function toProgress(p) {
+  if (typeof p !== 'number' || Number.isNaN(p)) return null;
+  return Math.min(100, Math.max(0, Math.round(p)));
+}
+
+function isUnread(t) {
+  const seen = t.labels?.['herdr.seen'];
+  if (seen === undefined || seen === null || seen === '') return false;
+  return Number(seen) < t.turn;
+}
+
 export function toListItem(t) {
   const where = t.labels?.where;
   let space = 'Other';
@@ -31,6 +42,11 @@ export function toListItem(t) {
     tab,
     status: t.status?.state ?? 'idle',
     kind: t.status?.kind ?? null,
+    title: t.title || null,
+    activity: t.status?.title || Object.values(t.records ?? {}).find((r) => r?.title)?.title || null,
+    message: t.status?.msg || null,
+    progress: toProgress(t.status?.progress),
+    unread: isUnread(t),
     turn: t.turn,
     cols: t.cols,
     rows: t.rows,
