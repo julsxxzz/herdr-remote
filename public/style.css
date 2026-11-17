@@ -287,8 +287,6 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .key:active, .key.busy { background: var(--surface-2); border-color: var(--muted); }
 .key:disabled { opacity: .4; cursor: default; }
-.key-danger { color: var(--red); }
-.key-danger.armed { background: var(--red); border-color: var(--red); color: #1b0d10; font-size: 13px; }
 
 .reply { display: flex; gap: 8px; align-items: flex-end; }
 .reply textarea {

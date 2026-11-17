@@ -12,13 +12,11 @@ import { splitPan, snapCarry, releaseVelocity, flingStep, FRAME_MS, FLING_STOP, 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
 const SCROLLBACK = 2000; // xterm keeps history + what arrives live
-const CTRL_C_WINDOW_MS = 2000;
 const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
   ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
-  ['Ctrl+C', 'ctrl+c'],
 ];
 
 const THEME = {
@@ -495,21 +493,11 @@ export function openTermView({ root, address, item }) {
   }
 
   // ---- key bar ----
-  let ctrlCTimer = null;
   const keyButtons = KEYS.map(([label, key, aria]) => {
-    const b = el('button', { type: 'button', class: `key${key === 'ctrl+c' ? ' key-danger' : ''}`, 'aria-label': aria ?? null, text: label });
+    const b = el('button', { type: 'button', class: 'key', 'aria-label': aria ?? null, text: label });
     b.dataset.key = key;
     return b;
   });
-  const ctrlC = keyButtons.find((b) => b.dataset.key === 'ctrl+c');
-
-  function disarmCtrlC() {
-    clearTimeout(ctrlCTimer);
-    ctrlCTimer = null;
-    ctrlC.classList.remove('armed');
-    ctrlC.textContent = 'Ctrl+C';
-  }
-
   async function sendKey(key, button) {
     clearError();
     button.classList.add('busy');
@@ -523,15 +511,6 @@ export function openTermView({ root, address, item }) {
     const b = ev.target.closest('button.key');
     if (!b || b.disabled) return;
     const key = b.dataset.key;
-    if (key === 'ctrl+c') {
-      if (!ctrlCTimer) {
-        ctrlC.classList.add('armed');
-        ctrlC.textContent = 'Tap again';
-        ctrlCTimer = setTimeout(disarmCtrlC, CTRL_C_WINDOW_MS);
-        return;
-      }
-      disarmCtrlC();
-    }
     sendKey(key, b);
   });
 
@@ -570,7 +549,6 @@ export function openTermView({ root, address, item }) {
     for (const b of keyButtons) b.disabled = !on;
     sendBtn.disabled = !on;
     textarea.disabled = !on;
-    if (!on) disarmCtrlC();
   }
 
   const view = el('section', { class: 'view view-term' },
@@ -591,7 +569,6 @@ export function openTermView({ root, address, item }) {
     close() {
       closed = true;
       clearTimeout(reconnectTimer);
-      disarmCtrlC();
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('touchend', onTouchEnd, true);
       window.removeEventListener('touchcancel', onTouchEnd, true);

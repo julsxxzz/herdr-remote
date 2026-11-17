@@ -14,7 +14,7 @@ Away from your desk, agents (Claude Code, Codex, ...) stop and wait for you: a p
 
 - Lists your agent sessions grouped by Herdr space, most urgent first (needs you, working, done, idle).
 - Shows a session live in a real terminal view (xterm.js). Watching is read-only: it never resizes or types into the session on your PC.
-- Answers: key buttons (Enter, Tab, Esc, arrows, 1 2 3, Ctrl+C, Shift+Tab) and a text box that sends a line. Ctrl+C needs two taps: the first arms it, a second tap within 2 seconds sends it.
+- Answers: key buttons (Enter, Tab, Esc, arrows, 1 2 3, Shift+Tab) and a text box that sends a line.
 - Push notifications when an agent needs you and when it finishes. Both can be switched off in Settings.
 - Desk mode: a toggle that pauses all pushes while you are at the computer.
 
