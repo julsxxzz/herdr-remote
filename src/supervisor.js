@@ -6,11 +6,51 @@ import { fileURLToPath } from 'node:url';
 export const EXIT_SETUP_REQUIRED = 78; // sysexits EX_CONFIG
 const CLI = fileURLToPath(new URL('./cli.js', import.meta.url));
 
-// The running supervisor's pid, and the file "herdr-remote stop" drops to ask it to stop.
+// The running server's pid (supervisor, or a standalone --foreground run), and the file
+// "herdr-remote stop" drops to ask it to stop.
 // A request file (not a signal) because Windows cannot deliver a catchable signal to another process.
 export const pidFilePath = (home) => path.join(home, 'server.pid');
 const stopRequestPath = (home) => path.join(home, 'server.stop');
 const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
+
+const processAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+};
+
+function readPid(file) {
+  try {
+    const pid = Number(fs.readFileSync(file, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch { return null; }
+}
+
+// Claims <home>/server.pid for this process and starts watching for stop requests.
+// Returns { ok: false, pid } when another live process holds it (nothing is touched then),
+// else { ok: true, release } — release() stops watching and removes the pid file only if it is still ours.
+export function claimPidFile(home, { onStopRequest, pollMs = 500, isAlive = processAlive } = {}) {
+  const pidFile = pidFilePath(home);
+  const stopFile = stopRequestPath(home);
+  const holder = readPid(pidFile);
+  if (holder !== null && holder !== process.pid && isAlive(holder)) return { ok: false, pid: holder };
+  fs.mkdirSync(home, { recursive: true });
+  rmQuiet(stopFile); // a leftover request must not stop this run
+  fs.writeFileSync(pidFile, String(process.pid));
+  const control = setInterval(() => {
+    if (fs.existsSync(stopFile)) { rmQuiet(stopFile); onStopRequest?.(); }
+  }, pollMs);
+  control.unref?.();
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    clearInterval(control);
+    if (readPid(pidFile) === process.pid) rmQuiet(pidFile);
+  };
+  return { ok: true, release };
+}
+
+export const alreadyRunningMessage = (pid) =>
+  `herdr-remote is already running (pid ${pid}) — use "herdr-remote stop" first.`;
 
 function createLog(dir, maxBytes) {
   fs.mkdirSync(dir, { recursive: true });
@@ -40,6 +80,8 @@ export function superviseServer({
   maxLogBytes = 5 * 1024 * 1024,
   killAfterMs = 5000,
   controlPollMs = 500,
+  isAlive = processAlive,
+  forkImpl = fork,
 } = {}) {
   const log = createLog(path.join(home, 'logs'), maxLogBytes);
   const note = (m) => log.write(`[supervisor ${new Date().toISOString()}] ${m}\n`);
@@ -50,23 +92,23 @@ export function superviseServer({
   let settle;
   const done = new Promise((r) => { settle = r; });
 
-  const pidFile = pidFilePath(home);
-  const stopFile = stopRequestPath(home);
-  rmQuiet(stopFile); // a leftover request must not stop this run
-  fs.writeFileSync(pidFile, String(process.pid));
-  const control = setInterval(() => { if (fs.existsSync(stopFile)) { rmQuiet(stopFile); stop(); } }, controlPollMs);
-  control.unref?.();
+  const claim = claimPidFile(home, { onStopRequest: () => stop(), pollMs: controlPollMs, isAlive });
+  if (!claim.ok) {
+    note(`not starting: ${alreadyRunningMessage(claim.pid)}`);
+    settle({ reason: 'already-running', pid: claim.pid });
+    return { stop: async () => done, done };
+  }
   const finish = (result) => {
-    clearInterval(control);
-    try { if (fs.readFileSync(pidFile, 'utf8').trim() === String(process.pid)) rmQuiet(pidFile); } catch { /* already gone */ }
+    claim.release();
     settle(result);
   };
 
   const launch = () => {
     const startedAt = Date.now();
-    child = fork(entry, args, { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
-    child.stdout.on('data', (d) => log.write(String(d)));
-    child.stderr.on('data', (d) => log.write(String(d)));
+    const c = forkImpl(entry, args, { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
+    child = c;
+    c.stdout.on('data', (d) => log.write(String(d)));
+    c.stderr.on('data', (d) => log.write(String(d)));
     let ended = false;
     const onEnd = (code, signal) => {
       if (ended) return;
@@ -89,8 +131,17 @@ export function superviseServer({
       note(`server exited (code ${code}, signal ${signal}); restarting in ${delay} ms`);
       timer = setTimeout(launch, delay);
     };
-    child.on('error', (err) => { note(`child error: ${err.message}`); onEnd(null, null); });
-    child.on('exit', onEnd);
+    c.on('error', (err) => {
+      note(`child error: ${err.message}`);
+      // e.g. a failed kill(): the child may still be running. Restarting now would run two servers,
+      // so kill it and let its 'exit' drive the restart. No pid means it never started.
+      if (c.pid !== undefined && c.exitCode === null && c.signalCode === null) {
+        try { c.kill(); } catch { /* 'exit' still decides */ }
+        return;
+      }
+      onEnd(null, null);
+    });
+    c.on('exit', onEnd);
   };
   launch();
 
@@ -115,12 +166,8 @@ export function superviseServer({
   return { stop, done };
 }
 
-const processAlive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
-};
-
-// Asks the supervisor recorded in <home>/server.pid to stop, and waits for it.
-// Resolves 'stopped', 'not running' (no or stale pid file) or 'timeout'.
+// Asks the server recorded in <home>/server.pid to stop, and waits for it (never kills it).
+// Resolves 'stopped', 'not running' (no or stale pid file) or 'timeout — <pid> did not stop'.
 export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive = processAlive }) {
   const pidFile = pidFilePath(home);
   let pid;
@@ -135,5 +182,6 @@ export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive 
     if (!fs.existsSync(pidFile) || !isAlive(pid)) return 'stopped';
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  return 'timeout';
+  rmQuiet(stopRequestPath(home)); // don't let the stale request stop a later run by surprise
+  return `timeout — ${pid} did not stop`;
 }

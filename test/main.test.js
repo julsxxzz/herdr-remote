@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { startServer } from '../src/main.js';
@@ -13,6 +13,7 @@ import { createHc } from '../src/hc.js';
 import { hashPin } from '../src/auth.js';
 import { generateVapidKeys } from '../src/push.js';
 import { saveConfig, saveState, DEFAULT_STATE } from '../src/config.js';
+import { pidFilePath, stopRunning } from '../src/supervisor.js';
 
 const fakeHcPath = fileURLToPath(new URL('./fixtures/fake-hc.mjs', import.meta.url));
 const ORIGIN = 'http://127.0.0.1:4780';
@@ -32,13 +33,22 @@ let dirs = [];
 let running = null;
 let sockets = [];
 
+const isAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+};
+
 afterEach(async () => {
   for (const s of sockets) s.terminate();
   sockets = [];
   await running?.stop();
   running = null;
-  await new Promise((r) => setTimeout(r, 150));
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  // Killed fake-hc children may hold their dir briefly (Windows): retry removal until it succeeds.
+  for (const d of dirs) {
+    await waitFor(() => {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch { return false; }
+      return true;
+    });
+  }
   dirs = [];
 });
 
@@ -180,8 +190,9 @@ test('logout-everywhere closes open sockets with 4401 (R11)', async () => {
 
 test('stop() closes the port and kills the events child', async () => {
   const { fake } = await boot();
-  const callsFile = path.join(fake, 'calls.jsonl');
-  await waitFor(() => fs.existsSync(callsFile));
+  const pidFile = path.join(fake, 'events.pid');
+  const pid = await waitFor(() => fs.existsSync(pidFile) && Number(fs.readFileSync(pidFile, 'utf8')));
+  assert.equal(isAlive(pid), true);
   const port = running.port;
   await running.stop();
   running = null;
@@ -189,11 +200,7 @@ test('stop() closes the port and kills the events child', async () => {
     const s = net.connect(port, '127.0.0.1', () => { s.destroy(); resolve(); });
     s.on('error', reject);
   }));
-  // A live child would hold the fake dir (Windows); removal succeeding means it exited.
-  await waitFor(() => {
-    try { fs.rmSync(fake, { recursive: true, force: true }); } catch { return false; }
-    return !fs.existsSync(fake);
-  });
+  await waitFor(() => !isAlive(pid));
 });
 
 async function occupyPort() {
@@ -233,5 +240,47 @@ test('M5: cli start --foreground exits 78 with a clear line when the port is bus
     assert.ok(stderr.includes(IN_USE(port)), stderr);
   } finally {
     await new Promise((r) => blocker.close(r));
+  }
+});
+
+const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+const exitOf = (child) => new Promise((r) => {
+  if (child.exitCode !== null) r(child.exitCode); else child.once('exit', (code) => r(code));
+});
+// hcPath points at nothing, so no real hc is ever run.
+const foregroundHome = () => {
+  const { home } = mkdirs();
+  saveConfig(home, { ...validConfig(), hcPath: path.join(home, 'no-such-hc.exe') });
+  return home;
+};
+
+test('B2: a standalone start --foreground owns server.pid and honours "stop"', async () => {
+  const home = foregroundHome();
+  const child = spawn(process.execPath, [CLI, 'start', '--foreground', '--home', home], { windowsHide: true });
+  child.stdout.resume();
+  child.stderr.resume();
+  try {
+    await waitFor(() => fs.existsSync(pidFilePath(home)) && fs.readFileSync(pidFilePath(home), 'utf8').trim() === String(child.pid), 5000);
+    assert.equal(await stopRunning({ home, pollMs: 25, waitMs: 10000 }), 'stopped');
+    assert.equal(await exitOf(child), 0);
+    assert.equal(fs.existsSync(pidFilePath(home)), false);
+  } finally {
+    child.kill();
+  }
+});
+
+test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', async () => {
+  const home = foregroundHome();
+  const child = fork(CLI, ['start', '--foreground', '--home', home], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.resume();
+  try {
+    await waitFor(() => out.includes('listening on'), 5000);
+    assert.equal(fs.existsSync(pidFilePath(home)), false);
+    child.disconnect();
+    assert.equal(await exitOf(child), 0);
+  } finally {
+    child.kill();
   }
 });
