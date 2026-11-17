@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { createHc, isValidAddress, isValidKeyName } from '../src/hc.js';
+import { createHc, HC_IDENTITY_ENV, isValidAddress, isValidKeyName } from '../src/hc.js';
 
 const fakeHcPath = fileURLToPath(new URL('./fixtures/fake-hc.mjs', import.meta.url));
 let dir;
@@ -133,3 +135,86 @@ test('events spawns hc events --json and stays alive', async () => {
     await closed;
   }
 });
+
+test('B6: a timed-out send/keys reports "hc timed out", not an exit code', async () => {
+  const slow = createHc({ command: process.execPath, prefixArgs: ['-e', 'setInterval(()=>{},1000)'], timeoutMs: 200 });
+  const s = await slow.send('t3', 'hi');
+  assert.equal(s.ok, false);
+  assert.match(s.error, /^hc timed out/);
+  assert.match(s.error, /may or may not/);
+  const k = await slow.keys('t3', ['enter']);
+  assert.match(k.error, /^hc timed out/);
+});
+
+test('B7: ls returns [] when the JSON has no terminals, and still throws on non-JSON', async () => {
+  put('ls.json', JSON.stringify({ hidden_finished: 0 }));
+  assert.deepEqual(await hc.ls(), []);
+  put('ls.json', 'not json');
+  await assert.rejects(hc.ls(), SyntaxError);
+});
+
+// A child whose kill() does nothing and whose pipes never close (a grandchild holding them).
+function stuckChild() {
+  const c = new EventEmitter();
+  c.stdout = new PassThrough();
+  c.stderr = new PassThrough();
+  c.kills = 0;
+  c.kill = () => { c.kills++; return true; };
+  return c;
+}
+
+test('B8: run settles with code -1 after the kill grace even if close never fires', async () => {
+  const child = stuckChild();
+  const stub = createHc({ spawnImpl: () => child, killGraceMs: 100 });
+  const t0 = Date.now();
+  const r = await stub.run([], { timeoutMs: 50 });
+  assert.equal(r.code, -1);
+  assert.equal(r.timedOut, true);
+  assert.equal(child.kills, 1);
+  assert.ok(Date.now() - t0 < 1500);
+});
+
+test('B8: a late close after the grace does not settle twice', async () => {
+  const child = stuckChild();
+  const stub = createHc({ spawnImpl: () => child, killGraceMs: 50 });
+  const r = await stub.run([], { timeoutMs: 20 });
+  assert.equal(r.code, -1);
+  child.emit('close', 0); // must be ignored, not throw
+  child.emit('error', new Error('late'));
+});
+
+const identity = { HC_TERMINAL_ID: 't9', HC_TERMINAL_SOCKET: 'sock', HC_SCOPE: 'scope' };
+const envSeen = (cmd) => fs.readFileSync(path.join(dir, 'env.jsonl'), 'utf8').split('\n').filter(Boolean)
+  .map((l) => JSON.parse(l)).find((e) => e.argv[0] === cmd);
+const waitFor = async (fn) => { for (let i = 0; i < 100; i++) { try { return fn(); } catch { await new Promise((r) => setTimeout(r, 50)); } } return fn(); };
+
+for (const source of ['option', 'process.env']) {
+  test(`children never inherit hc terminal identity (${source})`, async () => {
+    const saved = { ...process.env };
+    const base = { ...process.env, FAKE_HC_DIR: dir, HERDR_TEST_KEEP: 'yes' };
+    let h;
+    if (source === 'option') {
+      h = createHc({ command: process.execPath, prefixArgs: [fakeHcPath], env: { ...base, ...identity } });
+    } else {
+      Object.assign(process.env, base, identity);
+      h = createHc({ command: process.execPath, prefixArgs: [fakeHcPath] });
+    }
+    put('events.jsonl', '{"seq":1}\n');
+    put('screen.bin', 'x');
+    const kids = [];
+    try {
+      await h.send('t3', 'hi');
+      kids.push(h.observe('t3'), h.events());
+      for (const cmd of ['send', 'attach', 'events']) {
+        const seen = await waitFor(() => { const e = envSeen(cmd); assert.ok(e); return e; });
+        assert.deepEqual(seen.hcEnv, {});
+        assert.equal(seen.keep, 'yes');
+      }
+    } finally {
+      for (const k of kids) k.kill();
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+    assert.deepEqual(HC_IDENTITY_ENV, ['HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE']);
+  });
+}

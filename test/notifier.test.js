@@ -101,3 +101,10 @@ test('never throws or rejects when sendAll fails', async () => {
   await new Promise((r) => setImmediate(r));
   assert.equal(logs.length, 3);
 });
+
+test('B19: a transition item without agent/space falls back to neutral words', () => {
+  const { n, sent } = setup();
+  n.onTransition(tr('idle', 'blocked', { item: {} }));
+  n.onTransition(tr('working', 'done', { address: 't2', item: undefined }));
+  assert.deepEqual(sent.map((p) => p.title), ['An agent in a space needs you', 'An agent in a space finished — waiting for you']);
+});

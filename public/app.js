@@ -153,13 +153,16 @@ function startApp() {
   setDeskMode(deskMode);
   renderConn();
   feed = createListFeed({
-    onList(next, desk) {
+    onList(next, desk, ready) {
       items = next;
       setDeskMode(desk);
       renderListView();
       if (termView) {
-        // null = the terminal left the list (finished or removed).
-        termView.update(items.find((i) => i.address === termView.address) ?? null);
+        const item = items.find((i) => i.address === termView.address);
+        // Absent from a ready, non-empty list = it finished or was removed. An empty or not-ready
+        // list (e.g. right after a server restart) proves nothing; the term socket's ended/4404 decides.
+        if (item) termView.update(item);
+        else if (ready && items.length > 0) termView.update(null);
       }
     },
     onConnection(on) {
@@ -173,7 +176,10 @@ function startApp() {
   syncPushSubscription();
 }
 
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => {
+  document.querySelector('dialog.sheet')?.close(); // a route change (e.g. a tapped notification) dismisses Settings
+  route();
+});
 document.addEventListener('visibilitychange', reportVisibility);
 
 async function boot() {

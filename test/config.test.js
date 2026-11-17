@@ -90,3 +90,20 @@ test('validateConfig: proxy allows explicit bind', () => {
 test('validateConfig: unknown access value', () => {
   assert.ok(validateConfig({ ...good, access: 'open' }).some((e) => e.includes('access')));
 });
+
+test('B4: configDir on win32 without APPDATA falls back to ~/AppData/Roaming', () => {
+  assert.equal(
+    configDir({ env: {}, platform: 'win32' }),
+    path.join(os.homedir(), 'AppData', 'Roaming', 'herdr-remote'),
+  );
+});
+
+test('B5: loadConfig/loadState reject non-object JSON with an error naming the file', () => {
+  for (const text of ['[]', '"x"', 'null', '5']) {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, 'config.json'), text);
+    fs.writeFileSync(path.join(dir, 'state.json'), text);
+    assert.throws(() => loadConfig(dir), (e) => e.message.includes(path.join(dir, 'config.json')) && /object/.test(e.message), text);
+    assert.throws(() => loadState(dir), (e) => e.message.includes(path.join(dir, 'state.json')) && /object/.test(e.message), text);
+  }
+});

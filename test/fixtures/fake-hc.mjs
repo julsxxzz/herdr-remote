@@ -9,6 +9,12 @@ const has = (name) => fs.existsSync(file(name));
 const read = (name) => fs.readFileSync(file(name));
 
 fs.appendFileSync(file('calls.jsonl'), JSON.stringify(argv) + '\n');
+fs.appendFileSync(file('env.jsonl'), JSON.stringify({
+  argv,
+  hcEnv: Object.fromEntries(['HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE']
+    .map((k) => [k, process.env[k]]).filter(([, v]) => v !== undefined)),
+  keep: process.env.HERDR_TEST_KEEP,
+}) + '\n');
 
 const keepAlive = () => setInterval(() => {}, 1000);
 const cmd = argv[0];
@@ -21,6 +27,7 @@ if (cmd === 'ls') {
   if (has('stderr')) process.stderr.write(read('stderr'));
   process.exit(has('exit') ? Number(read('exit').toString().trim()) : 0);
 } else if (cmd === 'events') {
+  fs.writeFileSync(file('events.pid'), String(process.pid)); // lets tests check this child exited
   if (has('events.jsonl')) process.stdout.write(read('events.jsonl'));
   if (has('events-exit')) {
     process.stdout.write('', () => process.exit(3));

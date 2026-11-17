@@ -57,12 +57,16 @@ export function checkOrigin(headers, cfg) {
 
 const sha256hex = (s) => createHash('sha256').update(s).digest('hex');
 
+const isExpired = (entry, t) => !Number.isFinite(entry?.lastSeen) || !(t - entry.lastSeen < SESSION_TTL_MS);
+
 export function createSessions({ state, save, now = Date.now }) {
   if (!state.sessions) state.sessions = {};
   return {
     create() {
       const token = randomBytes(32).toString('base64url');
       const t = now();
+      // Devices that never come back are otherwise never pruned; the save below covers the sweep.
+      for (const [key, entry] of Object.entries(state.sessions)) if (isExpired(entry, t)) delete state.sessions[key];
       state.sessions[sha256hex(token)] = { created: t, lastSeen: t };
       save();
       return token;
@@ -73,7 +77,7 @@ export function createSessions({ state, save, now = Date.now }) {
       if (!Object.hasOwn(state.sessions, key)) return false;
       const entry = state.sessions[key];
       const t = now();
-      if (!Number.isFinite(entry.lastSeen) || !(t - entry.lastSeen < SESSION_TTL_MS)) {
+      if (isExpired(entry, t)) {
         delete state.sessions[key];
         save();
         return false;

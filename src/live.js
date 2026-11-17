@@ -16,11 +16,9 @@ function refuse(socket, status, text) {
   socket.destroy();
 }
 
-function parseHistory(raw) {
-  if (raw === null || raw === '') return DEFAULT_HISTORY;
-  const n = Number(raw);
-  if (!Number.isInteger(n)) return DEFAULT_HISTORY;
-  return Math.min(MAX_HISTORY, Math.max(0, n));
+export function parseHistory(raw) {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return DEFAULT_HISTORY; // no 1e3 / 0x10 / -5
+  return Math.min(MAX_HISTORY, Number(raw));
 }
 
 export function attachWebSockets(server, {
@@ -41,7 +39,8 @@ export function attachWebSockets(server, {
       timer = null;
       if (ws.readyState !== ws.OPEN) return;
       lastSent = Date.now();
-      ws.send(JSON.stringify({ type: 'list', items: store.list(), deskMode: state.deskMode }));
+      // ready: false until the first snapshot, so clients don't read an empty list as "nothing runs".
+      ws.send(JSON.stringify({ type: 'list', items: store.list(), deskMode: state.deskMode, ready: store.ready }));
     };
     const onChanged = () => {
       if (timer) return;

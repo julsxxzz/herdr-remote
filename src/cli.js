@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { configDir } from './config.js';
 import { startServer } from './main.js';
 import { runSetup } from './setup.js';
-import { superviseServer, stopRunning, EXIT_SETUP_REQUIRED } from './supervisor.js';
+import {
+  superviseServer, stopRunning, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
+} from './supervisor.js';
 import { installTask, uninstallTask } from './startup-task.js';
 
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -52,6 +54,22 @@ function createPrompt() {
 }
 
 async function foreground(home) {
+  // Under the supervisor (IPC channel present) the supervisor owns server.pid and stop requests;
+  // a standalone --foreground run owns them itself so "herdr-remote stop" works for it too.
+  const supervised = typeof process.send === 'function';
+  let shutdown = null;
+  let stopRequested = false; // a stop request that arrived before the server was up
+  if (!supervised) {
+    const claim = await claimPidFile(home, {
+      onStopRequest: () => (shutdown ? shutdown() : (stopRequested = true)),
+      log: (m) => console.log(m),
+    });
+    if (!claim.ok) {
+      console.error(alreadyRunningMessage(claim.pid, home));
+      process.exit(EXIT_SETUP_REQUIRED);
+    }
+    process.on('exit', claim.release);
+  }
   let running;
   try {
     running = await startServer({ home, log: console });
@@ -60,10 +78,17 @@ async function foreground(home) {
     // Neither is fixed by restarting: the supervisor stops on this code instead of looping.
     process.exit(err.code === 'SETUP_REQUIRED' || err.code === 'PORT_IN_USE' ? EXIT_SETUP_REQUIRED : 1);
   }
-  const shutdown = async () => { await running.stop(); process.exit(0); };
-  process.on('disconnect', shutdown); // supervisor gone: don't hold the port
+  let stopping = false;
+  shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    await running.stop();
+    process.exit(0); // the 'exit' hook releases the pid file
+  };
+  if (supervised) process.on('disconnect', shutdown); // supervisor gone: don't hold the port
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+  if (stopRequested) shutdown();
 }
 
 async function main(argv) {
@@ -86,7 +111,13 @@ async function main(argv) {
       process.once('SIGINT', quit);
       process.once('SIGTERM', quit);
       const r = await sup.done;
-      if (r.reason === 'setup-required') {
+      if (r.reason === 'already-running') {
+        console.error(alreadyRunningMessage(r.pid, home));
+        process.exitCode = EXIT_SETUP_REQUIRED;
+      } else if (r.reason === 'error') {
+        console.error(`herdr-remote could not start: ${r.message}`);
+        process.exitCode = 1;
+      } else if (r.reason === 'setup-required') {
         console.error('herdr-remote could not start: it needs setup ("npm run setup") or its port is already in use (see logs/server.log).');
         process.exitCode = EXIT_SETUP_REQUIRED;
       }
@@ -94,8 +125,8 @@ async function main(argv) {
     }
     case 'stop': {
       const r = await stopRunning({ home });
-      if (r === 'timeout') {
-        console.error('herdr-remote did not stop in time (see logs/server.log).');
+      if (r.startsWith('timeout')) {
+        console.error(`herdr-remote did not stop in time: ${r} (see logs/server.log).`);
         process.exitCode = 1;
       } else console.log(r);
       return;

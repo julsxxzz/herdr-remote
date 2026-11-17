@@ -33,6 +33,7 @@ function saveFitPref(fit) {
 export function openTermView({ root, address, item }) {
   let current = item;
   let gone = false;
+  let socketSaidGone = false; // 'ended' or 4404 on the current socket: lists can't undo that
   let term = null;
   let ws = null;
   let closed = false;
@@ -148,6 +149,7 @@ export function openTermView({ root, address, item }) {
     sock.binaryType = 'arraybuffer';
     ws = sock;
     resetOnSize = true;
+    socketSaidGone = false;
     sock.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         let msg;
@@ -157,6 +159,9 @@ export function openTermView({ root, address, item }) {
           onSize(msg.cols, msg.rows);
         } else if (msg?.type === 'ended') {
           ended = true;
+          gone = true;
+          socketSaidGone = true;
+          renderHeader();
           showBanner('Session ended', { tone: 'ended' });
           setControlsEnabled(false);
         }
@@ -171,6 +176,9 @@ export function openTermView({ root, address, item }) {
       if (closed || ended) return;
       if (ev.code === 4401) return signedOut();
       if (ev.code === 4404) {
+        gone = true;
+        socketSaidGone = true;
+        renderHeader();
         showBanner('This terminal is no longer running.', { tone: 'ended' });
         setControlsEnabled(false);
         return;
@@ -304,7 +312,7 @@ export function openTermView({ root, address, item }) {
   return {
     address,
     update(next) {
-      if (next) { current = next; gone = false; } else gone = true;
+      if (next) { current = next; gone = socketSaidGone; } else gone = true;
       renderHeader();
     },
     close() {
