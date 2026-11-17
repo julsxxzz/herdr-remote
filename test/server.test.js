@@ -32,9 +32,11 @@ before(() => {
   pinHash = hashPin(PIN);
 });
 
+const startWithLog = (log) => start({}, { log });
+
 const ident = { 'tailscale-user-login': LOGIN };
 
-async function start(configOverrides = {}) {
+async function start(configOverrides = {}, { log = () => {} } = {}) {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-test-'));
   state = structuredClone(DEFAULT_STATE);
   saves = 0;
@@ -66,7 +68,7 @@ async function start(configOverrides = {}) {
     },
     publicDir: path.join(root, 'public'),
     vendorDir: path.join(root, 'node_modules', '@xterm', 'xterm'),
-    log: () => {},
+    log,
     onSettingsChanged: () => hookCalls.push('settings'),
     onLogoutEverywhere: () => hookCalls.push('logout'),
   });
@@ -218,7 +220,129 @@ test('terminals list and send', async () => {
   fs.writeFileSync(path.join(dir, 'stderr'), '{"error":{"kind":"blocked","message":"showing a dialog"}}');
   const bad = await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi' } });
   assert.equal(bad.status, 409);
-  assert.deepEqual(bad.data, { error: 'showing a dialog' });
+  assert.deepEqual(bad.data, { error: 'showing a dialog', kind: 'blocked' });
+});
+
+const setStatus = (st, { kind = null, msg, turn = 1 } = {}) => store.reset({
+  seq: 2,
+  terminals: [{
+    address: 't1', state: 'live', status: { app: 'claude-code', state: st, kind, msg }, turn,
+    cols: 80, rows: 24, labels: { where: 'demo / 1' }, foreground: { name: 'claude' }, argv: [], cwd: 'C:\work\demo',
+  }],
+}, { emitTransitions: false });
+
+const DIALOG = { kind: 'question', msg: 'answer: Which colour? (Red · Blue)', turn: 3 };
+const EXPECT = { kind: 'question', message: 'answer: Which colour? (Red · Blue)', turn: 3 };
+const forceSend = (cookie, body) => req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'green please', force: true, expect: EXPECT, ...body } });
+
+test('force send: --force when the terminal is blocked on the dialog the user saw', async () => {
+  const cookie = await login();
+  setStatus('blocked', DIALOG);
+  assert.equal(store.get('t1').status, 'blocked');
+  assert.equal((await forceSend(cookie)).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--force', '--', 'green please']);
+  // without force a blocked terminal still gets a plain send (hc decides)
+  assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi' } })).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--', 'hi']);
+  assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force: false } })).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--', 'hi']);
+});
+
+test('force send: a changed or closed dialog is 409 dialog_changed and nothing is sent', async () => {
+  const cookie = await login();
+  const cases = [
+    ['kind changed', () => setStatus('blocked', { ...DIALOG, kind: 'permission' })],
+    ['message changed', () => setStatus('blocked', { ...DIALOG, msg: 'answer: Which fruit? (Apple · Pear)' })],
+    ['turn changed', () => setStatus('blocked', { ...DIALOG, turn: 4 })],
+    ['not blocked: working', () => setStatus('working', DIALOG)],
+    ['not blocked: done', () => setStatus('done', DIALOG)],
+    ['not blocked: idle', () => setStatus('idle', DIALOG)],
+  ];
+  for (const [name, set] of cases) {
+    set();
+    const r = await forceSend(cookie);
+    assert.equal(r.status, 409, name);
+    assert.deepEqual(r.data, { error: 'dialog_changed' }, name);
+  }
+  assert.deepEqual(calls(), []); // never a fallback to a plain send
+});
+
+test('force send: null kind/message are compared too', async () => {
+  const cookie = await login();
+  setStatus('blocked', { turn: 2 });
+  assert.equal((await forceSend(cookie, { expect: { kind: null, message: null, turn: 2 } })).status, 204);
+  assert.equal((await forceSend(cookie, { expect: { kind: 'question', message: null, turn: 2 } })).status, 409);
+  assert.equal(calls().length, 1);
+});
+
+test('force send: force without a valid expect is 400 and nothing is sent', async () => {
+  const cookie = await login();
+  setStatus('blocked', DIALOG);
+  const bad = [
+    undefined, null, 'x', [], {},
+    { kind: 'question', message: EXPECT.message }, // no turn
+    { kind: 5, message: EXPECT.message, turn: 3 },
+    { kind: 'question', message: {}, turn: 3 },
+    { kind: 'question', message: EXPECT.message, turn: '3' },
+    { kind: 'question', message: EXPECT.message, turn: true },
+  ];
+  for (const expect of bad) {
+    const r = await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force: true, expect } });
+    assert.equal(r.status, 400, JSON.stringify(expect));
+    assert.deepEqual(r.data, { error: 'bad_expect' });
+  }
+  assert.deepEqual(calls(), []);
+});
+
+test('force send: whitespace text is 400 bad_text before anything else', async () => {
+  const cookie = await login();
+  setStatus('blocked', DIALOG);
+  for (const body of [{ text: '   ', force: true, expect: EXPECT }, { text: ' \n ', force: true }]) {
+    const r = await req('POST', '/api/terminals/t1/send', { cookie, body });
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.data, { error: 'bad_text' });
+  }
+  assert.deepEqual(calls(), []);
+});
+
+test('force send: non-boolean force is 400 and nothing is sent; unknown terminal still 404', async () => {
+  const cookie = await login();
+  setStatus('blocked', DIALOG);
+  for (const force of ['true', 1, null, {}]) {
+    const r = await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force, expect: EXPECT } });
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.data, { error: 'bad_force' });
+  }
+  assert.deepEqual(calls(), []);
+  assert.equal((await req('POST', '/api/terminals/t9/send', { cookie, body: { text: 'hi', force: true, expect: EXPECT } })).status, 404);
+  fs.writeFileSync(path.join(dir, 'exit'), '1');
+  fs.writeFileSync(path.join(dir, 'stderr'), 'nope');
+  const bad = await forceSend(cookie);
+  assert.equal(bad.status, 409);
+  assert.deepEqual(bad.data, { error: 'nope', kind: null });
+});
+
+test('force send: every forced send is logged with address, kind and message, never the text', async () => {
+  await new Promise((r) => srv.close(r));
+  const lines = [];
+  const longMsg = `answer: ${'x'.repeat(200)}`;
+  await startWithLog((...a) => lines.push(a.join(' ')));
+  const cookie = await login();
+  setStatus('blocked', { ...DIALOG, msg: longMsg });
+  assert.equal((await forceSend(cookie, { text: 'secret answer', expect: { ...EXPECT, message: longMsg } })).status, 204);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /forced send/);
+  assert.match(lines[0], /t1/);
+  assert.match(lines[0], /question/);
+  assert.ok(lines[0].includes(longMsg.slice(0, 80)));
+  assert.ok(!lines[0].includes(longMsg.slice(0, 81)));
+  assert.match(lines[0], /\d{4}-\d\d-\d\dT\d\d:\d\d/);
+  assert.ok(!lines[0].includes('secret answer'));
+  // a refused one (dialog changed) and a plain send are not forced sends
+  setStatus('done', DIALOG);
+  await forceSend(cookie);
+  await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'plain' } });
+  assert.equal(lines.length, 1);
 });
 
 test('keys validation', async () => {

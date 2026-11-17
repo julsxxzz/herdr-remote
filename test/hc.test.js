@@ -39,18 +39,29 @@ test('send passes text verbatim after --', async () => {
   assert.deepEqual(calls().at(-1), ['send', 't3', '--', text]);
 });
 
+test('send with force puts --force before --; default and force:false are unchanged', async () => {
+  assert.deepEqual(await hc.send('t3', 'green please', { force: true }), { ok: true });
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--force', '--', 'green please']);
+  await hc.send('t3', 'hi', { force: false });
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', 'hi']);
+  await hc.send('t3', 'hi', {});
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', 'hi']);
+  await hc.send('t3', 'hi', { force: 'true' }); // only the boolean true forces
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', 'hi']);
+});
+
 test('send failure uses JSON stderr message', async () => {
   put('exit', '1');
   put('stderr', '{"error":{"kind":"blocked","message":"it is showing a dialog"}}');
-  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'it is showing a dialog' });
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'it is showing a dialog', kind: 'blocked' });
 });
 
 test('send failure falls back to plain stderr, then exit code', async () => {
   put('exit', '1');
   put('stderr', 'oops\n');
-  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'oops' });
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'oops', kind: null });
   put('stderr', '');
-  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'hc exited with code 1' });
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'hc exited with code 1', kind: null });
 });
 
 test('keys passes names after --', async () => {
@@ -142,6 +153,7 @@ test('B6: a timed-out send/keys reports "hc timed out", not an exit code', async
   assert.equal(s.ok, false);
   assert.match(s.error, /^hc timed out/);
   assert.match(s.error, /may or may not/);
+  assert.equal(s.kind, 'timeout');
   const k = await slow.keys('t3', ['enter']);
   assert.match(k.error, /^hc timed out/);
 });

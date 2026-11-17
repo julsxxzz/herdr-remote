@@ -78,6 +78,17 @@ function readJsonBody(req) {
 }
 
 const isBool = (v) => typeof v === 'boolean';
+const isStringOrNull = (v) => v === null || typeof v === 'string';
+
+// The dialog the phone saw when the user confirmed a forced send: { kind, message, turn }.
+function isValidExpect(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    && isStringOrNull(v.kind) && isStringOrNull(v.message)
+    && (v.turn === null || Number.isFinite(v.turn));
+}
+
+const sameDialog = (item, expect) => item.status === 'blocked'
+  && item.kind === expect.kind && item.message === expect.message && (item.turn ?? null) === expect.turn;
 const settingsOf = (state) => ({ deskMode: state.deskMode, notifyBlocked: state.notifyBlocked, notifyDone: state.notifyDone });
 
 function serveFile(res, file, method) {
@@ -112,7 +123,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
   async function sendToTerminal(res, address, run) {
     if (!store.get(address)) return sendJson(res, 404, { error: 'not_found' });
     const r = await run();
-    if (!r.ok) return sendJson(res, 409, { error: r.error });
+    if (!r.ok) return sendJson(res, 409, { error: r.error, kind: r.kind ?? null });
     res.writeHead(204);
     res.end();
   }
@@ -163,11 +174,20 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
       try { address = decodeURIComponent(m[1]); } catch { return sendJson(res, 404, { error: 'not_found' }); }
       if (!isValidAddress(address)) return sendJson(res, 404, { error: 'not_found' });
       if (m[2] === 'send') {
-        const { text } = body;
+        const { text, force = false, expect } = body;
         if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT) {
           return sendJson(res, 400, { error: 'bad_text' });
         }
-        return sendToTerminal(res, address, () => hc.send(address, text));
+        if (!isBool(force)) return sendJson(res, 400, { error: 'bad_force' });
+        if (!force) return sendToTerminal(res, address, () => hc.send(address, text));
+        // --force types into an open dialog (e.g. its "Type something" option). Only into the
+        // dialog the user confirmed: if it changed or closed meanwhile, nothing is sent at all.
+        if (!isValidExpect(expect)) return sendJson(res, 400, { error: 'bad_expect' });
+        const item = store.get(address);
+        if (!item) return sendJson(res, 404, { error: 'not_found' });
+        if (!sameDialog(item, expect)) return sendJson(res, 409, { error: 'dialog_changed' });
+        log(`forced send to ${address} (${item.kind ?? 'dialog'}: ${String(item.message ?? '').slice(0, 80)}) at ${new Date().toISOString()}`);
+        return sendToTerminal(res, address, () => hc.send(address, text, { force: true }));
       }
       const { keys } = body;
       if (!Array.isArray(keys) || keys.length < 1 || keys.length > MAX_KEYS || !keys.every(isValidKeyName)) {

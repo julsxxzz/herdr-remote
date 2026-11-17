@@ -3,15 +3,28 @@
 
 import { api, terminalPath, signedOut } from './api.js';
 import { el, statusIcon, statusKey, STATUS_LABEL, itemName, itemDetails } from './list.js';
+import {
+  MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel, zoomAriaLabel,
+  pinchStep, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
+} from './zoom.js';
+import {
+  splitPan, snapCarry, releaseVelocity, flingStep, latestVisible,
+  FRAME_MS, FLING_STOP, FLING_DECAY, FLING_DECAY_REDUCED, VELOCITY_WINDOW_MS,
+} from './scroll.js';
+import { createDialogConfirm } from './dialog.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
-const HISTORY = 200;
-// Fit never shrinks text below this; a wider terminal pans horizontally instead (ruling R14).
-const MIN_FIT_SCALE = 0.5;
+const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
+const SCROLLBACK = 2000; // xterm keeps history + what arrives live
+const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
+const KEY_OK_MS = 700; // a key button shows its tick this long after a successful press
+const ENDED_HINT = 'Session ended — your text is kept.';
 
+// [label, hc key name, aria-label, extra class]. Two rows of six; Esc sits at the edge.
 const KEYS = [
-  ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
-  ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
+  ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'],
+  ['Enter', 'enter'], ['Tab', 'tab'], ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
+  ['Esc', 'esc', 'Escape', 'key-esc'],
 ];
 
 const THEME = {
@@ -21,11 +34,8 @@ const THEME = {
   selectionBackground: '#33506a',
 };
 
-function readFitPref() {
-  try { return localStorage.getItem('hr.fit') !== '100'; } catch { return true; }
-}
-function saveFitPref(fit) {
-  try { localStorage.setItem('hr.fit', fit ? 'fit' : '100'); } catch { /* storage unavailable */ }
+function storage() {
+  try { return window.localStorage; } catch { return null; }
 }
 
 export function openTermView({ root, address, item }) {
@@ -38,18 +48,26 @@ export function openTermView({ root, address, item }) {
   let ended = false;
   let attempt = 0;
   let reconnectTimer = null;
-  let fit = readFitPref();
+  let zoom = readZoomPref(storage()); // { mode: 'fit' | 'manual', zoom }
+  // Scale applied by the last layout(); before the first one only a manual zoom is known.
+  let scale = zoom.mode === 'manual' ? zoom.zoom : 1;
+  let laidOut = false;
   let resetOnSize = true;
 
   // ---- header ----
   const headTop = el('div', { class: 'head-top' });
   const headDetails = el('div', { class: 'head-details' });
   const headMeta = el('div', { class: 'row-meta' });
-  const fitBtn = el('button', { type: 'button', class: 'chip-btn fit-toggle' });
   const header = el('header', { class: 'term-head' },
     el('a', { class: 'icon-btn back', href: '#/', 'aria-label': 'Back to list' }, el('span', { 'aria-hidden': 'true', text: '‹' })),
-    el('div', { class: 'head-body' }, headTop, headDetails, headMeta),
-    fitBtn);
+    el('div', { class: 'head-body' }, headTop, headDetails, headMeta));
+
+  // ---- zoom bar: its own row above the terminal, so the header keeps its full width ----
+  const zoomOutBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom out', text: '−' });
+  const fitBtn = el('button', { type: 'button', class: 'chip-btn zoom-fit', 'aria-label': 'Fit to width' });
+  const zoomInBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom in', text: '+' });
+  const zoomRow = el('div', { class: 'zoom-row' },
+    el('div', { class: 'zoom', role: 'group', 'aria-label': 'Zoom' }, zoomOutBtn, fitBtn, zoomInBtn));
 
   function renderHeader() {
     if (gone || !current) {
@@ -85,38 +103,307 @@ export function openTermView({ root, address, item }) {
   }
   const hideBanner = () => { banner.hidden = true; };
 
+  // ---- zoom ----
+  // Unscaled size of the rendered terminal (.xterm includes its padding, so a fitted width
+  // matches the area exactly). CSS transforms don't change offsetWidth/Height.
+  function naturalSize() {
+    const w = term?.element?.offsetWidth || 0;
+    const h = term?.element?.offsetHeight || 0;
+    return w && h ? { w, h } : null;
+  }
+
+  function renderZoom() {
+    fitBtn.textContent = zoomLabel(zoom);
+    // Fit's scale is unknown until the terminal is laid out: don't announce a made-up 100%.
+    const known = laidOut || zoom.mode === 'manual';
+    fitBtn.setAttribute('aria-label', known ? zoomAriaLabel(zoom, scale) : 'Fit to width');
+    zoomOutBtn.disabled = scale <= MIN_ZOOM;
+    zoomInBtn.disabled = scale >= MAX_ZOOM;
+  }
+
+  // Scales the terminal and sizes its wrapper; anything wider than the area pans
+  // horizontally inside the area only (the page itself never scrolls sideways).
   function layout() {
-    if (!term?.element) return;
-    // .xterm includes its padding, so the fitted width matches the area exactly.
-    const w = term.element.offsetWidth;
-    const h = term.element.offsetHeight;
-    if (!w || !h) return;
-    area.classList.toggle('natural', !fit);
-    if (fit) {
-      const fitScale = area.clientWidth / w;
-      const scale = Math.max(fitScale, MIN_FIT_SCALE);
-      area.classList.toggle('scroll-x', scale > fitScale);
+    const size = naturalSize();
+    if (size) {
+      scale = effectiveScale(zoom, area.clientWidth, size.w);
+      const width = Math.floor(size.w * scale);
+      area.classList.toggle('scroll-x', width > area.clientWidth);
       host.style.transform = `scale(${scale})`;
-      wrap.style.width = `${Math.floor(w * scale)}px`;
-      wrap.style.height = `${Math.ceil(h * scale)}px`;
-    } else {
-      area.classList.add('scroll-x');
-      host.style.transform = '';
-      wrap.style.width = '';
-      wrap.style.height = '';
+      wrap.style.width = `${width}px`;
+      wrap.style.height = `${Math.ceil(size.h * scale)}px`;
+      laidOut = true;
+    } else if (zoom.mode === 'manual') {
+      scale = zoom.zoom; // not laid out yet, but a manual zoom is still known
+    }
+    renderZoom();
+  }
+
+  // Applies a new zoom state and scrolls (from the live offsets) so the content at
+  // (fromX, fromY) — area coordinates — stays there. Defaults to the area's centre.
+  function applyZoom(next, { fromX = area.clientWidth / 2, fromY = area.clientHeight / 2 } = {}) {
+    const fromScale = scale;
+    const { scrollLeft, scrollTop } = area;
+    zoom = next;
+    layout();
+    if (!naturalSize()) return;
+    const pos = anchoredScroll({ fromScale, toScale: scale, scrollLeft, scrollTop, fromX, fromY, toX: fromX, toY: fromY });
+    area.scrollLeft = pos.scrollLeft;
+    area.scrollTop = pos.scrollTop;
+  }
+
+  const saveZoom = () => saveZoomPref(storage(), zoom);
+  let saveTimer = null;
+  function saveZoomSoon() {
+    clearTimeout(saveTimer);
+    // Flush first: a still-pending frame holds wheel input that isn't applied yet.
+    saveTimer = setTimeout(() => { saveTimer = null; flushFrame(); saveZoom(); }, WHEEL_SAVE_MS);
+  }
+
+  function commitZoom(next) {
+    stopFling(); // + / − / Fit taps stop a running fling
+    applyZoom(next);
+    saveZoom();
+  }
+
+  zoomOutBtn.addEventListener('click', () => commitZoom(zoomOut(scale)));
+  zoomInBtn.addEventListener('click', () => commitZoom(zoomIn(scale)));
+  fitBtn.addEventListener('click', () => commitZoom({ mode: 'fit', zoom: 1 }));
+
+  const areaPoint = (x, y) => {
+    const r = area.getBoundingClientRect();
+    return { x: x - r.left, y: y - r.top };
+  };
+
+  // Gestures fire faster than frames: collect input, lay out at most once per frame.
+  let frame = 0;
+  let pendingWheel = null; // { delta, x, y }
+  let pinch = null; // { ids: [id, id], last: { dist, x, y }, next: same | null }
+  const scheduleFrame = () => { if (!frame) frame = requestAnimationFrame(runFrame); };
+  function flushFrame() {
+    if (!frame) return;
+    cancelAnimationFrame(frame);
+    runFrame();
+  }
+  function runFrame() {
+    frame = 0;
+    if (pendingWheel) {
+      const w = pendingWheel;
+      pendingWheel = null;
+      applyZoom({ mode: 'manual', zoom: wheelScale(scale, w.delta) }, { fromX: w.x, fromY: w.y });
+    }
+    if (pinch?.next && naturalSize()) {
+      const prev = pinch.last;
+      pinch.last = pinch.next;
+      pinch.next = null;
+      // Incremental and from the live scroll offsets. When the touchmove wasn't cancelable the
+      // browser has already panned by the midpoint's movement: zoom about the current midpoint only.
+      const step = pinchStep({
+        scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, prev, next: pinch.last, native: pinch.native,
+      });
+      zoom = { mode: 'manual', zoom: step.scale };
+      layout();
+      area.scrollLeft = step.scrollLeft;
+      area.scrollTop = step.scrollTop;
     }
   }
 
-  function renderFitBtn() {
-    fitBtn.textContent = fit ? 'Fit' : '100%';
-    fitBtn.setAttribute('aria-label', fit ? 'Fitted to width. Switch to 100% size' : 'Shown at 100%. Switch to fit width');
+  // ---- scrolling: one range, xterm scrollback above + the area's own scroll below ----
+  let lineCarry = 0; // fractional scrollback px not yet worth a whole line
+  let topCarry = 0; // sub-pixel of the area's own scroll lost to scroll snapping
+  let leftCarry = 0;
+  function resetCarries() { lineCarry = 0; topCarry = 0; leftCarry = 0; }
+  function rowHeightPx() { // one terminal row in screen px at the current zoom
+    const screen = term?.element?.querySelector('.xterm-screen');
+    return screen && term.rows ? (screen.offsetHeight / term.rows) * scale : 0;
   }
-  fitBtn.addEventListener('click', () => {
-    fit = !fit;
-    saveFitPref(fit);
-    renderFitBtn();
-    layout();
+  // Scrolls the view by (dx, dy) screen px, positive = towards right/bottom.
+  // Returns whether anything moved (a fling stops at the ends).
+  function panBy(dx, dy) {
+    let moved = false;
+    if (dx) {
+      const before = area.scrollLeft;
+      const max = area.scrollWidth - area.clientWidth;
+      const desired = Math.min(max, Math.max(0, before + leftCarry + dx));
+      area.scrollLeft = desired;
+      leftCarry = snapCarry(desired, area.scrollLeft);
+      moved = desired !== before;
+    }
+    if (dy) {
+      const buf = term?.buffer.active;
+      const r = splitPan({
+        delta: dy, scrollTop: area.scrollTop + topCarry, maxScrollTop: area.scrollHeight - area.clientHeight,
+        linesAbove: buf ? buf.viewportY : 0, linesBelow: buf ? buf.baseY - buf.viewportY : 0,
+        lineHeight: rowHeightPx(), carry: lineCarry,
+      });
+      lineCarry = r.carry;
+      area.scrollTop = r.scrollTop;
+      topCarry = snapCarry(r.scrollTop, area.scrollTop); // the sub-pixel Chrome's snapping dropped
+      if (r.lines) term.scrollLines(r.lines); // scrolling up keeps xterm from following new output
+      moved = moved || Math.abs(r.rest) < Math.abs(dy);
+    }
+    updateLatest();
+    return moved;
+  }
+
+  // Fling: keeps panning after a quick swipe, slowing down each frame (sooner with reduced motion).
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  let fling = null; // { vx, vy, t } in px per frame
+  let flingFrame = 0;
+  function stopFling() {
+    cancelAnimationFrame(flingFrame);
+    flingFrame = 0;
+    fling = null;
+  }
+  function startFling(vx, vy) {
+    stopFling();
+    if (Math.abs(vx) < FLING_STOP && Math.abs(vy) < FLING_STOP) return;
+    fling = { vx, vy, t: null };
+    flingFrame = requestAnimationFrame(flingTick);
+  }
+  function flingTick(now) {
+    flingFrame = 0;
+    if (!fling) return;
+    const dt = fling.t === null ? FRAME_MS : Math.min(100, Math.max(0, now - fling.t));
+    fling.t = now;
+    const k = dt / FRAME_MS;
+    const moved = panBy(fling.vx * k, fling.vy * k);
+    const decay = reducedMotion?.matches ? FLING_DECAY_REDUCED : FLING_DECAY;
+    fling.vx = flingStep(fling.vx, dt, decay);
+    fling.vy = flingStep(fling.vy, dt, decay);
+    if (!moved || (!fling.vx && !fling.vy)) return stopFling();
+    flingFrame = requestAnimationFrame(flingTick);
+  }
+
+  // Wheel, in the capture phase so xterm doesn't also scroll its scrollback on its own.
+  // Plain wheel walks the same range as a touch pan; Ctrl/⌘ + wheel (and a trackpad
+  // pinch, which Chrome reports the same way) zooms.
+  area.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stopFling();
+    if (ev.ctrlKey || ev.metaKey) {
+      const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? area.clientHeight : 1;
+      const p = areaPoint(ev.clientX, ev.clientY);
+      pendingWheel = { delta: (pendingWheel?.delta ?? 0) + ev.deltaY * lines, x: p.x, y: p.y };
+      scheduleFrame();
+      saveZoomSoon();
+      return;
+    }
+    const unit = ev.deltaMode === 1 ? (rowHeightPx() || 16) : ev.deltaMode === 2 ? area.clientHeight : 1;
+    let dx = ev.deltaX * unit;
+    let dy = ev.deltaY * unit;
+    if (ev.shiftKey && !dx) { dx = dy; dy = 0; }
+    panBy(dx, dy);
+  }, { capture: true, passive: false });
+
+  // Touch: .term-area has touch-action: none, so we own every gesture on it (no native
+  // scroll, no page zoom, no pull-to-refresh). One finger pans + flings; two fingers pinch,
+  // following two specific touches by identifier. Only touches that started on the terminal
+  // count: a thumb resting on the key bar or reply box never joins a pinch.
+  const areaTouches = (list) => [...list].filter((t) => t.target instanceof Node && area.contains(t.target));
+  let pan = null; // { id, x, y, samples: [{ t, x, y }] }
+  function startPan(t) {
+    const now = performance.now();
+    pan = { id: t.identifier, x: t.clientX, y: t.clientY, samples: [{ t: now, x: t.clientX, y: t.clientY }] };
+  }
+  function measure(a, b) {
+    const p = areaPoint((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+    return { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), x: p.x, y: p.y };
+  }
+  function findTouch(list, id) {
+    for (const t of list) if (t.identifier === id) return t;
+    return null;
+  }
+  function pinchPair(list) {
+    const a = findTouch(list, pinch.ids[0]);
+    const b = findTouch(list, pinch.ids[1]);
+    return a && b ? [a, b] : null;
+  }
+  // (Re)bases the pinch on the first two touches: nothing jumps, the next move is measured from here.
+  function startPinch(list) {
+    flushFrame();
+    const [a, b] = list;
+    pinch = { ids: [a.identifier, b.identifier], last: measure(a, b), next: null, native: false };
+  }
+  function endPinch() {
+    flushFrame();
+    pinch = null;
+    saveZoom();
+  }
+
+  // Capture phase + stopPropagation: xterm's own touch scrolling never sees these.
+  area.addEventListener('touchstart', (ev) => {
+    ev.stopPropagation();
+    stopFling(); // any new touch stops a fling
+    const touches = areaTouches(ev.touches);
+    if (touches.length >= 2) {
+      if (ev.cancelable) ev.preventDefault();
+      pan = null;
+      if (pinch && pinchPair(touches)) return; // an extra finger: keep following the pair
+      startPinch(touches);
+    } else if (!pinch && touches.length === 1) {
+      startPan(touches[0]);
+    }
+  }, { capture: true, passive: false });
+  area.addEventListener('touchmove', (ev) => {
+    ev.stopPropagation();
+    if (ev.cancelable) ev.preventDefault();
+    if (pinch) {
+      const pair = pinchPair(ev.touches);
+      if (!pair) return;
+      // With touch-action: none our moves are cancelable, so this stays false in practice.
+      pinch.native = !ev.cancelable;
+      pinch.next = measure(...pair);
+      scheduleFrame();
+      return;
+    }
+    const t = pan && findTouch(ev.touches, pan.id);
+    if (!t) return;
+    panBy(pan.x - t.clientX, pan.y - t.clientY); // content follows the finger
+    const now = performance.now();
+    pan.x = t.clientX;
+    pan.y = t.clientY;
+    pan.samples.push({ t: now, x: t.clientX, y: t.clientY });
+    while (pan.samples.length > 2 && pan.samples[0].t < now - 2 * VELOCITY_WINDOW_MS) pan.samples.shift();
+  }, { capture: true, passive: false });
+  // Window, capture phase: sees every lift, even though the area stops propagation.
+  const onTouchEnd = (ev) => {
+    if (pinch) {
+      const touches = areaTouches(ev.touches);
+      if (pinchPair(touches)) return;
+      if (touches.length >= 2) { startPinch(touches); return; } // 3 → 2 fingers: re-base
+      endPinch();
+      if (touches.length === 1) startPan(touches[0]); // the remaining finger keeps panning
+      return;
+    }
+    if (!pan || findTouch(ev.touches, pan.id)) return;
+    const { vx, vy } = releaseVelocity(pan.samples, performance.now());
+    pan = null;
+    if (ev.type === 'touchend') startFling(-vx * FRAME_MS, -vy * FRAME_MS);
+  };
+  window.addEventListener('touchend', onTouchEnd, true);
+  window.addEventListener('touchcancel', onTouchEnd, true);
+
+  // ---- "↓ Latest": shown while xterm is scrolled up into its history ----
+  const latestBtn = el('button', { type: 'button', class: 'latest', 'aria-label': 'Jump to latest output', hidden: true },
+    el('span', { 'aria-hidden': 'true', text: '↓ Latest' }));
+  function updateLatest() {
+    const b = term?.buffer.active;
+    latestBtn.hidden = !b || !latestVisible({
+      viewportY: b.viewportY, baseY: b.baseY,
+      scrollTop: area.scrollTop, scrollHeight: area.scrollHeight, clientHeight: area.clientHeight,
+    });
+  }
+  area.addEventListener('scroll', () => updateLatest(), { passive: true });
+  latestBtn.addEventListener('click', () => {
+    stopFling();
+    resetCarries();
+    term?.scrollToBottom();
+    area.scrollTop = area.scrollHeight;
+    updateLatest();
   });
+  const stage = el('div', { class: 'term-stage' }, area, latestBtn);
 
   const resizeObserver = new ResizeObserver(() => layout());
   resizeObserver.observe(area);
@@ -124,18 +411,28 @@ export function openTermView({ root, address, item }) {
   function onSize(cols, rows) {
     if (!term) {
       term = new window.Terminal({
-        cols, rows, disableStdin: true, scrollback: 1000, fontSize: 14, cursorBlink: false,
+        cols, rows, disableStdin: true, scrollback: SCROLLBACK, fontSize: 14, cursorBlink: false,
         fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, "Roboto Mono", "Droid Sans Mono", monospace',
         theme: THEME,
       });
       term.open(host);
+      // xterm focuses its hidden textarea on a tap: never let that raise the on-screen keyboard.
+      if (term.textarea) {
+        term.textarea.setAttribute('inputmode', 'none');
+        term.textarea.tabIndex = -1;
+      }
       resizeObserver.observe(term.element);
+      // While scrolled up, xterm keeps the position as output arrives; only the button changes.
+      term.onScroll(updateLatest);
+      term.onWriteParsed(updateLatest);
     } else {
       if (resetOnSize) term.reset();
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
     }
     resetOnSize = false;
+    resetCarries();
     layout();
+    updateLatest();
   }
 
   function connect() {
@@ -219,71 +516,150 @@ export function openTermView({ root, address, item }) {
     return `Something went wrong (HTTP ${r.status}).`;
   }
 
+  // Tapping a key or Send must not move focus out of the reply box: the keyboard stays up.
+  const keepFocus = (ev) => ev.preventDefault();
+
   // ---- key bar ----
-  const keyButtons = KEYS.map(([label, key, aria]) => {
-    const b = el('button', { type: 'button', class: 'key', 'aria-label': aria ?? null, text: label });
+  const keyButtons = KEYS.map(([label, key, aria, extra]) => {
+    const b = el('button', { type: 'button', class: extra ? `key ${extra}` : 'key', 'aria-label': aria ?? null, text: label });
     b.dataset.key = key;
     return b;
   });
-
+  const okTimers = new Map();
   async function sendKey(key, button) {
+    confirmDispatch({ type: 'key' }); // a key press changes what the dialog shows: disarm
     clearError();
+    clearTimeout(okTimers.get(button));
+    button.classList.remove('ok');
     button.classList.add('busy');
     const r = await api(terminalPath(address, 'keys'), { method: 'POST', body: { keys: [key] } });
     button.classList.remove('busy');
-    if (!r.ok && r.status !== 401) showError(describeFailure(r));
+    if (closed) return;
+    if (r.ok) {
+      button.classList.add('ok');
+      okTimers.set(button, setTimeout(() => button.classList.remove('ok'), KEY_OK_MS));
+    } else if (r.status !== 401) showError(describeFailure(r));
   }
 
+  // A key-bar touch that is part of a multi-finger gesture (e.g. a pinch at the bottom edge
+  // with a finger landing on the key bar) never sends a key.
+  let keyTouch = null; // { multi } for the latest key-bar touch
+  const onAnyTouchStart = (ev) => { if (keyTouch && ev.touches.length > 1) keyTouch.multi = true; };
+  window.addEventListener('touchstart', onAnyTouchStart, true);
+
   const keybar = el('div', { class: 'keybar', role: 'group', 'aria-label': 'Keys' }, keyButtons);
+  keybar.addEventListener('pointerdown', keepFocus);
+  keybar.addEventListener('mousedown', keepFocus);
+  keybar.addEventListener('touchstart', (ev) => { keyTouch = { multi: ev.touches.length > 1 }; }, { passive: true });
   keybar.addEventListener('click', (ev) => {
+    const multi = keyTouch?.multi;
+    keyTouch = null;
     const b = ev.target.closest('button.key');
-    if (!b || b.disabled) return;
+    if (!b || b.disabled || multi) return;
     sendKey(b.dataset.key, b);
   });
 
   // ---- reply box ----
-  const textarea = el('textarea', { rows: '1', placeholder: 'Reply to the agent', 'aria-label': 'Reply text', enterkeyhint: 'enter', maxlength: '4000' });
+  // The Send logic, including the two-tap confirm for typing into a dialog, lives in dialog.js.
+  const textarea = el('textarea', {
+    rows: '1', placeholder: 'Reply to the agent', 'aria-label': 'Reply text', enterkeyhint: 'enter', maxlength: '4000',
+    'aria-describedby': 'reply-hint',
+  });
   const sendBtn = el('button', { type: 'submit', class: 'send', text: 'Send' });
+  sendBtn.addEventListener('pointerdown', keepFocus);
+  sendBtn.addEventListener('mousedown', keepFocus);
   const form = el('form', { class: 'reply' }, textarea, sendBtn);
+  const replyHint = el('p', { class: 'reply-hint', id: 'reply-hint', hidden: true });
+  const liveRegion = el('p', { class: 'visually-hidden', role: 'status', 'aria-live': 'polite' });
+
+  const confirm = createDialogConfirm({ item, now: () => performance.now() });
+  let controlsOn = true;
+  let wakeTimer = null;
+
+  function renderSend() {
+    const engaged = document.activeElement === textarea || textarea.value.length > 0;
+    const v = confirm.view({ engaged });
+    sendBtn.textContent = v.label;
+    sendBtn.classList.toggle('dialog', v.dialog);
+    sendBtn.classList.toggle('armed', v.armed);
+    sendBtn.disabled = !controlsOn || v.disabled;
+    const hint = controlsOn ? v.hint : ENDED_HINT;
+    replyHint.textContent = hint ?? '';
+    replyHint.hidden = !hint;
+    const live = controlsOn ? v.live : '';
+    if (liveRegion.textContent !== live) liveRegion.textContent = live;
+    // One timer for whatever the confirm waits on next (window end, closed-dialog guard, "Sent ✓").
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
+    const at = confirm.nextWake();
+    if (at !== null && !closed) {
+      wakeTimer = setTimeout(() => confirmDispatch({ type: 'tick' }), Math.max(0, at - performance.now()) + 5);
+    }
+  }
+  function confirmDispatch(ev) {
+    const effect = confirm.dispatch(ev);
+    renderSend();
+    return effect;
+  }
 
   const grow = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
   };
-  textarea.addEventListener('input', grow);
-  textarea.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); form.requestSubmit(); }
-  });
-  form.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
+  textarea.addEventListener('input', () => { grow(); confirmDispatch({ type: 'input' }); });
+  // "Answering" layout while the reply box has focus: header details and the zoom row fold away.
+  const setAnswering = (on) => { view.classList.toggle('answering', on); renderSend(); };
+  textarea.addEventListener('focus', () => setAnswering(true));
+  textarea.addEventListener('blur', () => setAnswering(false));
+
+  async function submit({ repeat = false } = {}) {
+    if (!controlsOn) return;
     const text = textarea.value;
-    if (!text.trim() || sendBtn.disabled) return;
+    const effect = confirmDispatch({ type: 'submit', repeat, hasText: Boolean(text.trim()) });
+    if (effect?.type !== 'send') return;
     clearError();
-    sendBtn.disabled = true;
-    sendBtn.textContent = 'Sending…';
-    const r = await api(terminalPath(address, 'send'), { method: 'POST', body: { text } });
-    sendBtn.disabled = ended;
-    sendBtn.textContent = 'Send';
-    if (r.ok) {
-      if (textarea.value === text) textarea.value = '';
+    const body = effect.force ? { text, force: true, expect: effect.expect } : { text };
+    const r = await api(terminalPath(address, 'send'), { method: 'POST', body });
+    if (closed) return;
+    if (r.ok && textarea.value === text) {
+      textarea.value = '';
       grow();
-    } else if (r.status !== 401) {
-      showError(describeFailure(r), r.status === 409 ? 'Answer the dialog with the keys above.' : null);
+    }
+    const result = confirmDispatch({
+      type: 'result', ok: r.ok, status: r.status, error: r.data?.error, kind: r.data?.kind, force: effect.force,
+    });
+    if (!r.ok && r.status !== 401 && result?.type !== 'notice') showError(describeFailure(r));
+  }
+  textarea.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      submit({ repeat: ev.repeat }); // a held Ctrl+Enter never confirms
     }
   });
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    submit();
+  });
 
+  // Session ended or gone: keys and Send off; the text stays (read-only) so it can be copied.
   function setControlsEnabled(on) {
+    controlsOn = on;
     for (const b of keyButtons) b.disabled = !on;
-    sendBtn.disabled = !on;
-    textarea.disabled = !on;
+    textarea.readOnly = !on;
+    if (!on) confirm.dispatch({ type: 'disarm' });
+    renderSend();
   }
 
   const view = el('section', { class: 'view view-term' },
-    header, banner, area,
-    el('div', { class: 'controls' }, feedback, keybar, form));
+    header, banner, zoomRow, stage,
+    el('div', { class: 'controls' }, feedback, keybar, form, replyHint, liveRegion));
+
+  // Pull-to-refresh is off only while the live view is shown (the list keeps it).
+  document.documentElement.classList.add('live-view');
 
   renderHeader();
-  renderFitBtn();
+  renderZoom();
+  renderSend();
   root.replaceChildren(view);
   connect();
 
@@ -291,12 +667,24 @@ export function openTermView({ root, address, item }) {
     address,
     update(next) {
       if (next) { current = next; gone = socketSaidGone; } else gone = true;
+      confirm.dispatch({ type: 'item', item: gone ? null : current });
       renderHeader();
+      setControlsEnabled(!gone && !ended);
     },
     close() {
       closed = true;
+      document.documentElement.classList.remove('live-view');
       clearTimeout(reconnectTimer);
+      clearTimeout(wakeTimer);
+      for (const t of okTimers.values()) clearTimeout(t);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('touchend', onTouchEnd, true);
+      window.removeEventListener('touchcancel', onTouchEnd, true);
+      window.removeEventListener('touchstart', onAnyTouchStart, true);
+      stopFling();
+      if (pinch) endPinch(); // flushes and saves a pinch still in progress
+      if (saveTimer) { clearTimeout(saveTimer); flushFrame(); saveZoom(); }
+      cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       const sock = ws;
       ws = null;

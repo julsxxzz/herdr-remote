@@ -19,6 +19,17 @@ function assertAddress(address) {
   if (!isValidAddress(address)) throw new TypeError('invalid terminal address');
 }
 
+// hc's JSON error kind (e.g. "blocked"), 'timeout' when we killed it, else null.
+function errorKind({ stderr, timedOut }) {
+  if (timedOut) return 'timeout';
+  try {
+    const kind = JSON.parse(stderr.trim())?.error?.kind;
+    return typeof kind === 'string' && kind ? kind : null;
+  } catch {
+    return null;
+  }
+}
+
 function errorMessage({ code, stderr, timedOut }) {
   if (timedOut) return 'hc timed out (the command may or may not have been delivered)';
   const text = stderr.trim();
@@ -77,7 +88,7 @@ export function createHc({
 
   async function runAction(args) {
     const r = await run(args);
-    return r.code === 0 ? { ok: true } : { ok: false, error: errorMessage(r) };
+    return r.code === 0 ? { ok: true } : { ok: false, error: errorMessage(r), kind: errorKind(r) };
   }
 
   return {
@@ -89,10 +100,11 @@ export function createHc({
       assertAddress(address);
       return runJson(['get', address, '--json']);
     },
-    async send(address, text) {
+    // force: also type while the terminal shows a dialog (hc refuses that by default).
+    async send(address, text, { force = false } = {}) {
       assertAddress(address);
       if (typeof text !== 'string') throw new TypeError('text must be a string');
-      return runAction(['send', address, '--', text]);
+      return runAction(['send', address, ...(force === true ? ['--force'] : []), '--', text]);
     },
     async keys(address, names) {
       assertAddress(address);
