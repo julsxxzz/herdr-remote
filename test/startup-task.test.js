@@ -158,7 +158,7 @@ test('lighter: uninstallTask ends the running launcher (/End, exit code ignored)
     return args[0] === '/End' ? { code: 1, stdout: '', stderr: 'not running' } : { code: 0, stdout: '', stderr: '' };
   };
   fs.writeFileSync(path.join(home, 'start-hidden.vbs'), 'x');
-  await uninstallTask({ home, cliPath: 'C:\a\cli.js', exec });
+  await uninstallTask({ home, cliPath: 'C:\\a\\cli.js', exec });
   assert.deepEqual(calls, [
     ['schtasks', '/End', '/TN', 'herdr-remote'],
     ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote'],
