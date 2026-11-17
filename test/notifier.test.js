@@ -38,12 +38,20 @@ test('non-notifying transitions are ignored', () => {
   assert.equal(sent.length, 0);
 });
 
-test('same address+turn+to dedupes', () => {
+test('repeated identical transition sends one push', () => {
   const { n, sent } = setup();
-  n.onTransition(tr('idle', 'blocked'));
+  n.onTransition(tr('working', 'blocked'));
   n.onTransition(tr('working', 'blocked'));
   assert.equal(sent.length, 1);
   n.onTransition(tr('idle', 'blocked', { turn: 4 }));
+  assert.equal(sent.length, 2);
+});
+
+test('blocked -> working -> blocked in one turn sends two pushes', () => {
+  const { n, sent } = setup();
+  n.onTransition(tr('idle', 'blocked'));
+  n.onTransition(tr('blocked', 'working'));
+  n.onTransition(tr('working', 'blocked'));
   assert.equal(sent.length, 2);
 });
 

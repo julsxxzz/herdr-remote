@@ -2,11 +2,17 @@ const DEDUPE_MAX = 1000;
 
 export function createNotifier({ state, push, log = () => {} }) {
   const visible = new Map(); // clientId -> address
-  const seen = new Set();
+  const seen = new Map(); // dedupe key -> { address, to }
 
-  function remember(key) {
-    seen.add(key);
-    if (seen.size > DEDUPE_MAX) seen.delete(seen.values().next().value);
+  function remember(key, address, to) {
+    seen.set(key, { address, to });
+    if (seen.size > DEDUPE_MAX) seen.delete(seen.keys().next().value);
+  }
+
+  // A different status ends the episode: the next push for this address is new
+  // (blocked -> working -> blocked in one turn notifies twice).
+  function forgetOnChange(address, to) {
+    for (const [key, v] of seen) if (v.address === address && v.to !== to) seen.delete(key);
   }
 
   function titleFor(tr) {
@@ -19,6 +25,7 @@ export function createNotifier({ state, push, log = () => {} }) {
   return {
     onTransition(tr) {
       try {
+        forgetOnChange(tr.address, tr.to);
         if (state.deskMode) return;
         const title = titleFor(tr);
         if (!title) return;
@@ -26,7 +33,7 @@ export function createNotifier({ state, push, log = () => {} }) {
         for (const a of visible.values()) if (a === address) return;
         const key = `${address}:${tr.turn}:${tr.to}`;
         if (seen.has(key)) return;
-        remember(key);
+        remember(key, address, tr.to);
         const payload = { title, body: 'Tap to open', address, tag: address, url: '/#/t/' + address };
         Promise.resolve(push.sendAll(payload)).catch((e) => log(`notify failed: ${e?.message ?? e}`));
       } catch (e) {

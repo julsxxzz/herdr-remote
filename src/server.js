@@ -145,6 +145,9 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
 
     if (pathname === '/api/logout-everywhere' && method === 'POST') {
       sessions.revokeAll();
+      // R18: devices re-register their push subscription after signing in again.
+      state.subscriptions = [];
+      saveState(state);
       onLogoutEverywhere();
       res.writeHead(204);
       return res.end();

@@ -266,6 +266,15 @@ test('logout-everywhere invalidates the cookie', async () => {
   assert.equal((await req('GET', '/api/terminals', { cookie })).status, 401);
 });
 
+test('R18: logout-everywhere also forgets push subscriptions and saves', async () => {
+  const cookie = await login();
+  state.subscriptions = [{ endpoint: 'https://push.example.com/a', keys: { p256dh: 'p', auth: 'a' } }];
+  const before = saves;
+  assert.equal((await req('POST', '/api/logout-everywhere', { cookie })).status, 204);
+  assert.deepEqual(state.subscriptions, []);
+  assert.ok(saves > before);
+});
+
 test('static files, vendor, traversal, headers', async () => {
   const index = await req('GET', '/');
   assert.equal(index.status, 200);
