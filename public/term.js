@@ -3,12 +3,14 @@
 
 import { api, terminalPath, signedOut } from './api.js';
 import { el, statusIcon, statusKey, STATUS_LABEL, itemName, itemDetails } from './list.js';
+import {
+  MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel,
+  pinchScale, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
+} from './zoom.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 200;
 const CTRL_C_WINDOW_MS = 2000;
-// Fit never shrinks text below this; a wider terminal pans horizontally instead (ruling R14).
-const MIN_FIT_SCALE = 0.5;
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
@@ -23,11 +25,8 @@ const THEME = {
   selectionBackground: '#33506a',
 };
 
-function readFitPref() {
-  try { return localStorage.getItem('hr.fit') !== '100'; } catch { return true; }
-}
-function saveFitPref(fit) {
-  try { localStorage.setItem('hr.fit', fit ? 'fit' : '100'); } catch { /* storage unavailable */ }
+function storage() {
+  try { return window.localStorage; } catch { return null; }
 }
 
 export function openTermView({ root, address, item }) {
@@ -40,18 +39,21 @@ export function openTermView({ root, address, item }) {
   let ended = false;
   let attempt = 0;
   let reconnectTimer = null;
-  let fit = readFitPref();
+  let zoom = readZoomPref(storage()); // { mode: 'fit' | 'manual', zoom }
+  let scale = 1; // scale applied to the terminal by the last layout()
   let resetOnSize = true;
 
   // ---- header ----
   const headTop = el('div', { class: 'head-top' });
   const headDetails = el('div', { class: 'head-details' });
   const headMeta = el('div', { class: 'row-meta' });
-  const fitBtn = el('button', { type: 'button', class: 'chip-btn fit-toggle' });
+  const zoomOutBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom out', text: '−' });
+  const fitBtn = el('button', { type: 'button', class: 'chip-btn zoom-fit', 'aria-label': 'Fit to width' });
+  const zoomInBtn = el('button', { type: 'button', class: 'chip-btn', 'aria-label': 'Zoom in', text: '+' });
   const header = el('header', { class: 'term-head' },
     el('a', { class: 'icon-btn back', href: '#/', 'aria-label': 'Back to list' }, el('span', { 'aria-hidden': 'true', text: '‹' })),
     el('div', { class: 'head-body' }, headTop, headDetails, headMeta),
-    fitBtn);
+    el('div', { class: 'zoom', role: 'group', 'aria-label': 'Zoom' }, zoomOutBtn, fitBtn, zoomInBtn));
 
   function renderHeader() {
     if (gone || !current) {
@@ -87,38 +89,108 @@ export function openTermView({ root, address, item }) {
   }
   const hideBanner = () => { banner.hidden = true; };
 
-  function layout() {
-    if (!term?.element) return;
-    // .xterm includes its padding, so the fitted width matches the area exactly.
-    const w = term.element.offsetWidth;
-    const h = term.element.offsetHeight;
-    if (!w || !h) return;
-    area.classList.toggle('natural', !fit);
-    if (fit) {
-      const fitScale = area.clientWidth / w;
-      const scale = Math.max(fitScale, MIN_FIT_SCALE);
-      area.classList.toggle('scroll-x', scale > fitScale);
-      host.style.transform = `scale(${scale})`;
-      wrap.style.width = `${Math.floor(w * scale)}px`;
-      wrap.style.height = `${Math.ceil(h * scale)}px`;
-    } else {
-      area.classList.add('scroll-x');
-      host.style.transform = '';
-      wrap.style.width = '';
-      wrap.style.height = '';
-    }
+  // ---- zoom ----
+  // Unscaled size of the rendered terminal (.xterm includes its padding, so a fitted width
+  // matches the area exactly). CSS transforms don't change offsetWidth/Height.
+  function naturalSize() {
+    const w = term?.element?.offsetWidth || 0;
+    const h = term?.element?.offsetHeight || 0;
+    return w && h ? { w, h } : null;
   }
 
-  function renderFitBtn() {
-    fitBtn.textContent = fit ? 'Fit' : '100%';
-    fitBtn.setAttribute('aria-label', fit ? 'Fitted to width. Switch to 100% size' : 'Shown at 100%. Switch to fit width');
+  function renderZoom() {
+    fitBtn.textContent = zoomLabel(zoom);
+    zoomOutBtn.disabled = scale <= MIN_ZOOM;
+    zoomInBtn.disabled = scale >= MAX_ZOOM;
   }
-  fitBtn.addEventListener('click', () => {
-    fit = !fit;
-    saveFitPref(fit);
-    renderFitBtn();
+
+  // Scales the terminal and sizes its wrapper; anything wider than the area pans
+  // horizontally inside the area only (the page itself never scrolls sideways).
+  function layout() {
+    const size = naturalSize();
+    if (size) {
+      scale = effectiveScale(zoom, area.clientWidth, size.w);
+      const width = Math.floor(size.w * scale);
+      area.classList.toggle('scroll-x', width > area.clientWidth);
+      host.style.transform = `scale(${scale})`;
+      wrap.style.width = `${width}px`;
+      wrap.style.height = `${Math.ceil(size.h * scale)}px`;
+    }
+    renderZoom();
+  }
+
+  // Applies a new zoom state and scrolls so the content at (fromX, fromY) — area
+  // coordinates, before the change — ends up at (toX, toY). Defaults to the area's centre.
+  function applyZoom(next, anchor = {}) {
+    const fromScale = anchor.fromScale ?? scale;
+    const scrollLeft = anchor.scrollLeft ?? area.scrollLeft;
+    const scrollTop = anchor.scrollTop ?? area.scrollTop;
+    const fromX = anchor.fromX ?? area.clientWidth / 2;
+    const fromY = anchor.fromY ?? area.clientHeight / 2;
+    zoom = next;
     layout();
-  });
+    if (!naturalSize()) return;
+    const pos = anchoredScroll({
+      fromScale, toScale: scale, scrollLeft, scrollTop,
+      fromX, fromY, toX: anchor.toX ?? fromX, toY: anchor.toY ?? fromY,
+    });
+    area.scrollLeft = pos.scrollLeft;
+    area.scrollTop = pos.scrollTop;
+  }
+
+  function commitZoom(next, anchor) {
+    applyZoom(next, anchor);
+    saveZoomPref(storage(), zoom);
+  }
+
+  zoomOutBtn.addEventListener('click', () => commitZoom(zoomOut(scale)));
+  zoomInBtn.addEventListener('click', () => commitZoom(zoomIn(scale)));
+  fitBtn.addEventListener('click', () => commitZoom({ mode: 'fit', zoom: 1 }));
+
+  const areaPoint = (x, y) => {
+    const r = area.getBoundingClientRect();
+    return { x: x - r.left, y: y - r.top };
+  };
+
+  // Desktop: Ctrl/⌘ + wheel (and trackpad pinch, which Chrome reports the same way).
+  area.addEventListener('wheel', (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey)) return; // plain wheel keeps scrolling
+    ev.preventDefault();
+    const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? area.clientHeight : 1;
+    const p = areaPoint(ev.clientX, ev.clientY);
+    commitZoom({ mode: 'manual', zoom: wheelScale(scale, ev.deltaY * lines) }, { fromX: p.x, fromY: p.y });
+  }, { passive: false });
+
+  // Phone: two-finger pinch. touch-action on .term-area leaves one-finger pan to the
+  // browser and stops page zoom; the pinch is measured from where it started.
+  let pinch = null;
+  function fingers(touches) {
+    const [a, b] = touches;
+    const p = areaPoint((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+    return { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), x: p.x, y: p.y };
+  }
+  area.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 2) return;
+    if (ev.cancelable) ev.preventDefault();
+    const f = fingers(ev.touches);
+    pinch = { scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, ...f };
+  }, { passive: false });
+  area.addEventListener('touchmove', (ev) => {
+    if (!pinch || ev.touches.length !== 2) return;
+    if (ev.cancelable) ev.preventDefault();
+    const f = fingers(ev.touches);
+    applyZoom({ mode: 'manual', zoom: pinchScale(pinch.scale, pinch.dist, f.dist) }, {
+      fromScale: pinch.scale, scrollLeft: pinch.scrollLeft, scrollTop: pinch.scrollTop,
+      fromX: pinch.x, fromY: pinch.y, toX: f.x, toY: f.y,
+    });
+  }, { passive: false });
+  const endPinch = (ev) => {
+    if (!pinch || ev.touches.length >= 2) return;
+    pinch = null;
+    saveZoomPref(storage(), zoom);
+  };
+  area.addEventListener('touchend', endPinch);
+  area.addEventListener('touchcancel', endPinch);
 
   const resizeObserver = new ResizeObserver(() => layout());
   resizeObserver.observe(area);
@@ -305,7 +377,7 @@ export function openTermView({ root, address, item }) {
     el('div', { class: 'controls' }, feedback, keybar, form));
 
   renderHeader();
-  renderFitBtn();
+  renderZoom();
   root.replaceChildren(view);
   connect();
 

@@ -218,7 +218,10 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .term-head .back { flex: none; }
 .head-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 11px; }
-.term-head .fit-toggle { flex: none; margin-top: 4px; }
+.zoom { flex: none; display: flex; gap: 2px; margin-top: 4px; }
+.zoom .chip-btn { padding: 0 6px; font-variant-numeric: tabular-nums; }
+.zoom .chip-btn:not(.zoom-fit) { font-size: 20px; line-height: 1; }
+.zoom .zoom-fit { min-width: 56px; }
 .status-tag { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--st); margin-left: auto; }
 .status-tag .icon { width: 16px; height: 16px; }
 
@@ -234,10 +237,11 @@ button, input, textarea { font: inherit; color: inherit; }
 .term-area {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--term-bg);
   scrollbar-gutter: stable;
+  /* One finger pans natively; two-finger pinch is handled in term.js, never as page zoom. */
+  touch-action: pan-x pan-y;
 }
 .term-area.scroll-x { overflow-x: auto; }
 .term-wrap { overflow: hidden; }
-.term-area.natural .term-wrap { overflow: visible; width: max-content; }
 .term-host { width: max-content; transform-origin: 0 0; }
 .term-host .xterm { padding: 4px; }
 
