@@ -35,7 +35,7 @@
 
 ## Open check (owner, before Task 8 is called done)
 
-Spec §7 risk 2: trigger a Claude Code permission prompt in Herdr and run `hc get <t> --json` — does `status.state` become `blocked`? If not, add a follow-up task for a fallback detector before shipping. Also: enable **HTTPS certificates** in the Tailscale admin console (MagicDNS is already on; cert domains are currently empty).
+Spec §7 risk 2: trigger a Claude Code permission prompt in Herdr and run `hc get <t> --json` — does `status.state` become `blocked`? If not, add a follow-up task for a fallback detector before shipping. Also: enable **MagicDNS** and **HTTPS certificates** in the Tailscale admin console.
 
 ## Review Focus
 
@@ -341,6 +341,6 @@ test/
 - Create: `README.md`
 
 - [ ] **Step 1: Write README** (spec §5.7 list): what it is + not affiliated with Herdr; tested setup Windows + Android Chrome; prerequisites (Herdr/herdr-core, Node ≥ 20.11, Tailscale on both devices, MagicDNS + HTTPS certificates); install (`git clone`, `npm install`, `npm run setup`, `npm start`); phone steps (open the printed URL, enter PIN, Add to Home screen, Settings → Enable notifications); keep-awake note; security model in plain words (tailnet only, owner login, PIN once per device, 30-day session, sign out everywhere, push carries no screen text, uses Google FCM); switching tailnets = re-run setup + re-pair; troubleshooting (403 = wrong Tailscale login; no push = HTTPS/notifications permission/desk mode; `hc` not found); uninstall (`herdr-remote uninstall-task`, `tailscale serve --https=443 off`, delete `%APPDATA%\herdr-remote`); "Advanced: other networks (unsupported)" section; licence.
-- [ ] **Step 2: Grep the repo for personal data** — `git grep -nIiE "users\\\\[a-z]+\\\\|@gmail|@shogo|ts\\.net" -- . ':!docs'` → only `example` placeholders.
+- [ ] **Step 2: Grep the repo for personal data** — `git grep -nIiE "users\\\\[a-z]+\\\\|@gmail|ts\\.net" -- . ':!docs'` → only `example` placeholders.
 - [ ] **Step 3: Owner end-to-end on the real phone** (spec §7 risk 3): setup in tailscale mode, open the ts.net URL on Android Chrome, install to home screen, enable notifications, send test → arrives; let a Claude Code session finish a turn with the phone locked → "finished" push arrives; tap → opens that live view; answer → visible on the computer; turn desk mode on → no push. Record results in the README's "Tested" line.
 - [ ] **Step 4: Commit** `docs: README with setup, security model and troubleshooting`.

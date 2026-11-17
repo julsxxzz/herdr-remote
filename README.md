@@ -14,7 +14,7 @@ Away from your desk, agents (Claude Code, Codex, ...) stop and wait for you: a p
 
 - Lists your agent sessions grouped by Herdr space, most urgent first (needs you, working, done, idle).
 - Shows a session live in a real terminal view (xterm.js). Watching is read-only: it never resizes or types into the session on your PC.
-- Answers: key buttons (Enter, Tab, Esc, arrows, 1 2 3, Ctrl+C, Shift+Tab) and a text box that sends a line.
+- Answers: key buttons (Enter, Tab, Esc, arrows, 1 2 3, Ctrl+C, Shift+Tab) and a text box that sends a line. Ctrl+C needs two taps: the first arms it, a second tap within 2 seconds sends it.
 - Push notifications when an agent needs you and when it finishes. Both can be switched off in Settings.
 - Desk mode: a toggle that pauses all pushes while you are at the computer.
 
@@ -54,9 +54,12 @@ Commands (`herdr-remote` if installed with the `bin` entry, otherwise `node src/
 | Command | What it does |
 |---|---|
 | `start [--foreground] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. |
-| `setup [--proxy] [--home <dir>]` | Interactive setup. Safe to re-run. |
+| `stop [--home <dir>]` | Stop the running server (prints `stopped` or `not running`). |
+| `setup [--proxy] [--home <dir>]` | Interactive setup. Safe to re-run, but only while the server is stopped (it refuses otherwise). |
 | `install-task [--home <dir>]` | Start at Windows login (Task Scheduler task `herdr-remote`, hidden window). |
 | `uninstall-task [--home <dir>]` | Remove that task. |
+
+To change settings later: `herdr-remote stop`, then `npm run setup`, then `npm start` again. The running server keeps its config in memory, so setup refuses to run while it answers on its port.
 
 Config and state live in `%APPDATA%\herdr-remote\` (override with `--home <dir>` or the `HERDR_REMOTE_HOME` environment variable). Logs are in `<home>\logs\server.log` (rotated at 5 MB to `server.log.1`).
 
@@ -86,27 +89,29 @@ The phone can only reach the app while the PC is on and awake. Set Windows power
 - Tailnet only: the server binds `127.0.0.1` and is exposed only through `tailscale serve`. It is never on the public internet.
 - Owner login: `tailscale serve` adds the signed-in user's login; only the one login set during setup is allowed. Anyone else gets 403.
 - PIN once per device, then a session cookie (HttpOnly, Secure, SameSite=Strict) valid 30 days, renewed while you use it. Only a hash of the PIN and of session tokens is stored. PIN attempts are rate limited.
-- Settings, Sign out everywhere ends all sessions and closes open live views.
+- Settings, Sign out everywhere ends all sessions, closes open live views and forgets every device's push subscription (a device re-registers when you sign in on it again). Changing the PIN in setup also signs every device out.
 - Because the app can type into your agents, keep your Tailscale login and devices secure.
-- Pushes go through Google's FCM (that is how Web Push works on Android). They are encrypted and carry only the agent name and space name, never screen text, paths or titles.
+- Pushes go through Google's FCM (that is how Web Push works on Android). They are encrypted and carry only the agent name, the space name, the terminal address and fixed text (for example "Claude Code in api needs you" / "Tap to open"), never screen content, paths or titles.
 - Nothing personal is stored in the repo; your config is in the app-data folder above.
 
 ## Switching tailnets or accounts
 
-The web address and the login change. Re-run `npm run setup`, then open the new URL on the phone, enter the PIN again and enable notifications again (old subscriptions and sessions are cleared).
+The web address and the login change. Run `herdr-remote stop`, re-run `npm run setup`, start the server again, then open the new URL on the phone, enter the PIN again and enable notifications again (old subscriptions and sessions are cleared).
 
 ## Troubleshooting
 
-- **403 Not allowed:** the phone is signed in to Tailscale as a different login than the one set up. Sign in with the right account, or re-run setup with the right login.
+- **"This account or network isn’t allowed to open herdr-remote."** (HTTP 403): the phone is signed in to Tailscale as a different login than the one set up. Sign in with the right account, or re-run setup with the right login.
 - **Page does not load:** is the PC awake, is the server running (check `<home>\logs\server.log`), and is `tailscale serve --bg 4780` active (`tailscale serve status`)?
 - **"needs setup" / server exits at start:** config is missing or invalid. Run `npm run setup`. The supervisor does not restart in this case.
+- **"port 4780 already in use — is herdr-remote already running?"** in the log: another copy (or another program) holds the port. Run `herdr-remote stop`, or free the port. The supervisor does not restart in this case either.
+- **"herdr-remote is running — stop it first: herdr-remote stop"** from setup: stop the server, run setup, then start it again.
 - **No push:** the address must be the https `ts.net` one (HTTPS certificates enabled); notification permission must be allowed in Android/Chrome site settings; desk mode must be off; the matching trigger must be on in Settings; and you must have tapped Enable notifications on this device after the last setup change.
 - **`hc` not found:** put herdr-core's folder (default `%LOCALAPPDATA%\Programs\herdr-core\`) on PATH, or re-run setup and give the full path to `hc`.
 - **Start-at-login does not start it:** run `node src/cli.js install-task` again, then check `schtasks /Query /TN herdr-remote` and the log file.
 
 ## Uninstall
 
-1. `node src/cli.js uninstall-task` (removes the login task).
+1. `node src/cli.js stop`, then `node src/cli.js uninstall-task` (removes the login task).
 2. `tailscale serve --https=443 off` (stops exposing it).
 3. Delete `%APPDATA%\herdr-remote` (config, PIN hash, keys, logs).
 4. Remove the app icon from the phone and delete the folder you cloned.
