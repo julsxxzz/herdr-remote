@@ -26,6 +26,7 @@ let saves;
 let store;
 let limiter;
 let pushCalls;
+let hookCalls;
 
 before(() => {
   pinHash = hashPin(PIN);
@@ -38,6 +39,7 @@ async function start(configOverrides = {}) {
   state = structuredClone(DEFAULT_STATE);
   saves = 0;
   pushCalls = [];
+  hookCalls = [];
   const save = () => { saves++; };
   store = new TerminalStore();
   store.reset({
@@ -65,6 +67,8 @@ async function start(configOverrides = {}) {
     publicDir: path.join(root, 'public'),
     vendorDir: path.join(root, 'node_modules', '@xterm', 'xterm'),
     log: () => {},
+    onSettingsChanged: () => hookCalls.push('settings'),
+    onLogoutEverywhere: () => hookCalls.push('logout'),
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   port = srv.address().port;
@@ -279,4 +283,18 @@ test('static files, vendor, traversal, headers', async () => {
   assert.equal((await req('GET', '/api/session')).headers['cache-control'], 'no-store');
   const denied = await req('GET', '/', { id: false });
   assert.equal(denied.headers['x-content-type-options'], 'nosniff');
+});
+
+test('onSettingsChanged fires after a successful PUT /api/settings only', async () => {
+  const cookie = await login();
+  assert.equal((await req('PUT', '/api/settings', { cookie, body: { deskMode: 'yes' } })).status, 400);
+  assert.deepEqual(hookCalls, []);
+  assert.equal((await req('PUT', '/api/settings', { cookie, body: { deskMode: true } })).status, 200);
+  assert.deepEqual(hookCalls, ['settings']);
+});
+
+test('onLogoutEverywhere fires after POST /api/logout-everywhere', async () => {
+  const cookie = await login();
+  assert.equal((await req('POST', '/api/logout-everywhere', { cookie })).status, 204);
+  assert.deepEqual(hookCalls, ['logout']);
 });

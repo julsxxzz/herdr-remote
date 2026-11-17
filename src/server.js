@@ -92,7 +92,7 @@ function serveFile(res, file, method) {
   });
 }
 
-export function createServer({ config, state, saveState, hc, store, sessions, limiter, push, publicDir, vendorDir, log = () => {} }) {
+export function createServer({ config, state, saveState, hc, store, sessions, limiter, push, publicDir, vendorDir, log = () => {}, onSettingsChanged = () => {}, onLogoutEverywhere = () => {} }) {
   const publicRoot = path.resolve(publicDir);
   const vendorFiles = {
     '/vendor/xterm.js': path.join(vendorDir, 'lib', 'xterm.js'),
@@ -145,6 +145,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
 
     if (pathname === '/api/logout-everywhere' && method === 'POST') {
       sessions.revokeAll();
+      onLogoutEverywhere();
       res.writeHead(204);
       return res.end();
     }
@@ -180,6 +181,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
         }
         for (const k of SETTING_KEYS) if (k in body) state[k] = body[k];
         saveState(state);
+        onSettingsChanged();
         return sendJson(res, 200, settingsOf(state));
       }
     }
