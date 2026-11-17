@@ -166,3 +166,16 @@ test('tailscale rejects empty/missing allowedLogin; unknown access acts as tails
   assert.equal(checkIdentity(h, cfg).ok, true);
   assert.equal(checkIdentity({}, cfg).ok, false);
 });
+
+test('B17: create() sweeps expired sessions of devices never used again, saving once', () => {
+  const { s, set, t0, state, saves } = mk();
+  const old = s.create();
+  s.create();
+  set(t0 + 31 * DAY);
+  const before = saves();
+  const fresh = s.create();
+  assert.equal(saves() - before, 1);
+  assert.equal(Object.keys(state.sessions).length, 1);
+  assert.equal(s.check(fresh), true);
+  assert.equal(s.check(old), false);
+});

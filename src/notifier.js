@@ -16,7 +16,8 @@ export function createNotifier({ state, push, log = () => {} }) {
   }
 
   function titleFor(tr) {
-    const { agent, space } = tr.item;
+    const agent = tr.item?.agent || 'An agent';
+    const space = tr.item?.space || 'a space';
     if (tr.to === 'blocked' && tr.from !== 'blocked' && state.notifyBlocked) return `${agent} in ${space} needs you`;
     if (tr.from === 'working' && tr.to === 'done' && state.notifyDone) return `${agent} in ${space} finished — waiting for you`;
     return null;

@@ -146,7 +146,7 @@ export function createListFeed({ onList, onConnection, onSignedOut }) {
     sock.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg?.type === 'list' && Array.isArray(msg.items)) onList(msg.items, Boolean(msg.deskMode));
+      if (msg?.type === 'list' && Array.isArray(msg.items)) onList(msg.items, Boolean(msg.deskMode), msg.ready !== false);
     };
     sock.onclose = async (ev) => {
       if (ws !== sock) return;

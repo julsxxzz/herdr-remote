@@ -157,6 +157,8 @@ export function openTermView({ root, address, item }) {
           onSize(msg.cols, msg.rows);
         } else if (msg?.type === 'ended') {
           ended = true;
+          gone = true;
+          renderHeader();
           showBanner('Session ended', { tone: 'ended' });
           setControlsEnabled(false);
         }
@@ -171,6 +173,8 @@ export function openTermView({ root, address, item }) {
       if (closed || ended) return;
       if (ev.code === 4401) return signedOut();
       if (ev.code === 4404) {
+        gone = true;
+        renderHeader();
         showBanner('This terminal is no longer running.', { tone: 'ended' });
         setControlsEnabled(false);
         return;

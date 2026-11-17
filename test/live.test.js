@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { createServer } from '../src/server.js';
-import { attachWebSockets } from '../src/live.js';
+import { attachWebSockets, parseHistory } from '../src/live.js';
 import { createHc } from '../src/hc.js';
 import { TerminalStore } from '../src/terminals.js';
 import { hashPin, createSessions, createRateLimiter } from '../src/auth.js';
@@ -325,4 +325,21 @@ test('disconnectAll closes list and term sockets with 4401 and kills the child',
   assert.equal(t.closed, 4401);
   await waitFor(() => dead(children[0]), 3000);
   assert.equal(visible.at(-1)[1], null);
+});
+
+test('B22: parseHistory accepts only plain digit strings', () => {
+  assert.equal(parseHistory('10'), 10);
+  assert.equal(parseHistory('99999'), 2000);
+  assert.equal(parseHistory(null), 200);
+  for (const raw of ['1e3', '0x10', '-5', ' 7', '7.0', '+7']) assert.equal(parseHistory(raw), 200, raw);
+});
+
+test('B20: list messages say whether the store has its first snapshot (ready)', async () => {
+  await restart({ emptyStore: true });
+  const c = open('/ws/list');
+  await waitFor(() => c.msgs.length >= 1);
+  assert.equal(c.msgs[0].ready, false);
+  store.reset({ seq: 1, terminals: [] }, { emitTransitions: false });
+  await waitFor(() => c.msgs.length >= 2);
+  assert.equal(c.msgs.at(-1).ready, true);
 });
