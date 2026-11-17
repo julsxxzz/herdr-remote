@@ -83,7 +83,7 @@ test('created, labels, size, finished, removed', () => {
   s.apply({ type: 'size', terminal: 't9', seq: 94, data: { cols: 90, rows: 30 } });
   assert.deepEqual([s.get('t9').cols, s.get('t9').rows], [90, 30]);
   s.apply({ type: 'heartbeat', terminal: 't9', seq: 95, data: {} });
-  s.apply({ type: 'finished', terminal: 't9', seq: 96, data: { state: 'finished', exit_code: 0 } });
+  s.apply({ type: 'finished', terminal: 't9', seq: 96, data: { exit_code: 0, finished_ms: 1, reason: 'exit', signal: null } });
   assert.equal(s.list().some((i) => i.address === 't9'), false);
   s.apply({ type: 'removed', terminal: 't1', seq: 97, data: {} });
   assert.equal(s.get('t1'), null);
@@ -95,7 +95,7 @@ test('created live terminal that is working transitions from idle; finish/remove
   s.reset({ seq: 1, terminals: [] }, { emitTransitions: false });
   const tr = collect(s);
   s.apply({ type: 'created', terminal: 't5', seq: 2, data: { address: 't5', state: 'live', status: { app: 'codex', state: 'working' }, turn: 1 } });
-  s.apply({ type: 'finished', terminal: 't5', seq: 3, data: { state: 'finished' } });
+  s.apply({ type: 'finished', terminal: 't5', seq: 3, data: { exit_code: 0, finished_ms: 1, reason: 'exit', signal: null } });
   s.apply({ type: 'removed', terminal: 't5', seq: 4, data: {} });
   assert.deepEqual(tr.map((e) => [e.from, e.to]), [['idle', 'working']]);
 });

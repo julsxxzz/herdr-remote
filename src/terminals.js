@@ -86,6 +86,7 @@ export class TerminalStore extends EventEmitter {
     } else if (prev) {
       const next = { ...prev, ...data };
       if (type === 'labels') next.labels = { ...prev.labels, ...data.labels };
+      if (type === 'finished') next.state = 'finished';
       this._records.set(terminal, next);
       if (isLive(prev) && isLive(next)) this._transition(toListItem(prev).status, next);
     } else {
