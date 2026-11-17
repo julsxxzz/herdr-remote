@@ -21,6 +21,12 @@ export function startWatcher({
   let snapshots = 0; // bumped on every events snapshot, to drop stale ls results
   const lsInFlight = new Set(); // AbortControllers of running `hc ls` polls
 
+  // TerminalStore rethrows listener errors after emitting 'changed'; contain them here so a faulty
+  // listener can neither kill the server nor be mistaken for an hc failure.
+  const toStore = (fn) => {
+    try { fn(); } catch (err) { log.warn?.(`store listener failed: ${err?.message ?? err}`); }
+  };
+
   function scheduleRestart(why, startedAt) {
     if (Date.now() - startedAt > HEALTHY_MS) step = 0;
     const delay = backoffMs[Math.min(step, backoffMs.length - 1)];
@@ -80,18 +86,19 @@ export function startWatcher({
         gotSnapshot = true;
         stopPolling();
         snapshots += 1;
-        store.reset(msg, { emitTransitions: haveData });
+        toStore(() => store.reset(msg, { emitTransitions: haveData }));
         haveData = true;
       } else if (msg?.method === 'event' && msg.params) {
         if (msg.params.type === 'missed') proc.kill(); // restart yields a fresh snapshot
-        else store.apply(msg.params);
+        else toStore(() => store.apply(msg.params));
       }
     });
     endChild = () => onEnd('stopped');
     proc.stderr?.resume();
     proc.on('error', (err) => {
-      // The child may still be running (e.g. a failed kill or pipe error): don't leave an orphan.
-      if (proc.exitCode === null && proc.signalCode === null) {
+      // The child may still be running (e.g. a pipe error): don't leave an orphan. A failing kill()
+      // emits 'error' synchronously, so never re-kill for a kill error (that would loop).
+      if (err?.syscall !== 'kill' && !ended && proc.exitCode === null && proc.signalCode === null) {
         try { proc.kill(); } catch { /* already gone */ }
       }
       onEnd(`error: ${err.message}`);
@@ -106,10 +113,10 @@ export function startWatcher({
     try {
       const items = await hc.ls({ signal: ac.signal });
       if (stopped || seen !== snapshots) return;
-      store.reset(
+      toStore(() => store.reset(
         { seq: store.seq, terminals: items.map(lsToTerminal) },
         { emitTransitions: haveData },
-      );
+      ));
       haveData = true;
     } catch (err) {
       if (!stopped) log.warn?.(`hc ls failed: ${err.message}`);
