@@ -71,6 +71,7 @@ export class TerminalStore extends EventEmitter {
   constructor() {
     super();
     this.seq = 0;
+    this.ready = false; // true once a first snapshot (events or ls) was applied
     this._records = new Map();
   }
 
@@ -78,6 +79,7 @@ export class TerminalStore extends EventEmitter {
     const old = this._records;
     this._records = new Map(terminals.map((t) => [t.address, t]));
     this.seq = seq;
+    this.ready = true;
     if (emitTransitions) {
       for (const t of terminals) {
         if (!isLive(t)) continue;

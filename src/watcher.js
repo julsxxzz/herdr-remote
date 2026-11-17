@@ -9,6 +9,7 @@ export function startWatcher({
   log = console,
   backoffMs = [1000, 2000, 5000, 10000, 30000],
   pollMs = 5000,
+  stallMs = 45000, // hc sends a heartbeat every 15 s; silence this long means a hung feed
 }) {
   let stopped = false;
   let child = null;
@@ -21,16 +22,26 @@ export function startWatcher({
   function spawnEvents() {
     restartTimer = null;
     if (stopped) return;
-    stopPolling();
+    // ls polling (if any) continues until this child delivers its snapshot.
     const startedAt = Date.now();
     const proc = hc.events();
     child = proc;
     let gotSnapshot = false;
     let ended = false;
+    let stallTimer = null;
+    const armStall = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        log.warn?.(`hc events silent for ${stallMs} ms; restarting`);
+        proc.kill(); // normal restart path via 'close'
+      }, stallMs);
+    };
+    armStall();
 
     const onEnd = (why) => {
       if (ended) return;
       ended = true;
+      clearTimeout(stallTimer);
       lines.close();
       if (child === proc) child = null;
       if (stopped) return;
@@ -44,6 +55,7 @@ export function startWatcher({
 
     const lines = readline.createInterface({ input: proc.stdout });
     lines.on('line', (line) => {
+      armStall();
       if (!line.trim()) return;
       let msg;
       try {
@@ -54,6 +66,7 @@ export function startWatcher({
       }
       if (!gotSnapshot && Array.isArray(msg?.terminals)) {
         gotSnapshot = true;
+        stopPolling();
         snapshots += 1;
         store.reset(msg, { emitTransitions: haveData });
         haveData = true;

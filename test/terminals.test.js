@@ -200,3 +200,10 @@ test('title and status events update get()', () => {
   const item = s.get('t1');
   assert.deepEqual([item.activity, item.message, item.progress], ['Fix lint', 'Linting', 80]);
 });
+
+test('ready is false until the first reset', () => {
+  const s = new TerminalStore();
+  assert.equal(s.ready, false);
+  s.reset({ seq: 0, terminals: [] }, { emitTransitions: false });
+  assert.equal(s.ready, true);
+});

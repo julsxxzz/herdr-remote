@@ -121,3 +121,35 @@ test('a missing hc binary is treated like an exit and retried', async () => {
   watcher = startWatcher({ hc: { ...bad, ls: async () => { errors++; throw new Error('x'); } }, store, log: silent, backoffMs: [20], pollMs: 20 });
   await until(() => errors >= 2);
 });
+
+const lsCalls = () => calls().filter((c) => c[0] === 'ls').length;
+const LS_ONE = JSON.stringify({ hidden_finished: 0, terminals: [{ address: 't7', agent: 'Codex', state: 'live', status: 'working', turn: 2, where: 'demo / 1' }] });
+
+test('M1: a silent events child (no line for stallMs) is killed and respawned', async () => {
+  put('events.jsonl', lines({ channel: null, seq: 1, terminals: [term('t1', 'idle')] }));
+  put('ls.json', LS_ONE);
+  const store = new TerminalStore();
+  start(store, { stallMs: 150 });
+  await until(() => eventsCalls() >= 2, 2000);
+});
+
+test('M1: a healthy feed (lines within stallMs) is not restarted', async () => {
+  put('events.jsonl', lines({ channel: null, seq: 1, terminals: [term('t1', 'idle')] }));
+  const store = new TerminalStore();
+  start(store, { stallMs: 5000 });
+  await until(() => store.get('t1'));
+  await sleep(300);
+  assert.equal(eventsCalls(), 1);
+});
+
+test('M1: ls polling keeps running after a respawn until the first snapshot line', async () => {
+  put('events.jsonl', ''); // children stay up but never send a snapshot
+  put('ls.json', LS_ONE);
+  const store = new TerminalStore();
+  start(store, { stallMs: 400, backoffMs: [20], pollMs: 30 });
+  await until(() => eventsCalls() >= 2, 3000); // first child stalled, second spawned
+  const before = lsCalls();
+  await sleep(250); // second child still silent, within stallMs
+  assert.ok(lsCalls() - before >= 3, `ls polled ${lsCalls() - before} times`);
+  assert.equal(store.get('t7')?.status, 'working');
+});

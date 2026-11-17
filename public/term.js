@@ -148,7 +148,6 @@ export function openTermView({ root, address, item }) {
     sock.binaryType = 'arraybuffer';
     ws = sock;
     resetOnSize = true;
-    sock.onopen = () => { attempt = 0; };
     sock.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         let msg;
@@ -163,6 +162,7 @@ export function openTermView({ root, address, item }) {
         }
         return;
       }
+      attempt = 0; // screen data flows: a later drop starts the backoff over
       if (term) term.write(new Uint8Array(ev.data));
     };
     sock.onclose = (ev) => {
@@ -182,6 +182,8 @@ export function openTermView({ root, address, item }) {
         });
         return;
       }
+      // Anything else reconnects with backoff: 1013 (server not ready / slow client),
+      // 1011 (observer stopped while the terminal still runs), network drops.
       const wait = RECONNECT_MS[Math.min(attempt, RECONNECT_MS.length - 1)];
       attempt++;
       showBanner('Connection lost. Reconnecting…', { tone: 'warn' });

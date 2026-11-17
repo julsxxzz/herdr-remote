@@ -30,16 +30,17 @@ const waitFor = async (fn, ms = 3000) => {
   assert.fail('condition not met in time');
 };
 
-async function start({ hcOverride, ...opts } = {}) {
+async function start({ hcOverride, emptyStore = false, terminal = {}, ...opts } = {}) {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-test-'));
   fs.writeFileSync(path.join(dir, 'screen.bin'), SCREEN);
   state = structuredClone(DEFAULT_STATE);
   store = new TerminalStore();
-  store.reset({
+  if (!emptyStore) store.reset({
     seq: 1,
     terminals: [{
       address: 't1', state: 'live', status: { app: 'claude-code', state: 'working' }, turn: 1,
       cols: 80, rows: 24, labels: { where: 'demo / 1' }, foreground: { name: 'claude' }, argv: [], cwd: 'C:\\work\\demo',
+      ...terminal,
     }],
   }, { emitTransitions: false });
   sessions = createSessions({ state, save: () => {} });
@@ -159,12 +160,65 @@ test('closing the socket kills the observe child', async () => {
   await waitFor(() => children[0].exitCode !== null || children[0].signalCode !== null, 2000);
 });
 
-test('attach exit sends ended and closes 1000', async () => {
+test('M3: attach exit while the terminal is still live closes 1011 without ended', async () => {
   fs.writeFileSync(path.join(dir, 'attach-exit'), '');
+  const c = open('/ws/term?address=t1');
+  await waitFor(() => c.closed !== null);
+  assert.equal(c.closed, 1011);
+  assert.ok(!c.msgs.some((m) => m.type === 'ended'));
+});
+
+test('M3: attach exit after the terminal is gone sends ended and closes 1000', async () => {
+  fs.writeFileSync(path.join(dir, 'attach-exit'), '');
+  await restart({
+    hcOverride: {
+      observe: () => {
+        const e = new EventEmitter();
+        e.kill = () => {};
+        setImmediate(() => {
+          store.reset({ seq: 5, terminals: [] }, { emitTransitions: false });
+          e.emit('close', 0);
+        });
+        return e;
+      },
+    },
+  });
   const c = open('/ws/term?address=t1');
   await waitFor(() => c.closed !== null);
   assert.equal(c.closed, 1000);
   assert.ok(c.msgs.some((m) => m.type === 'ended'));
+});
+
+test('M2: before the first snapshot /ws/term closes 1013 (retry), not 4404', async () => {
+  await restart({ emptyStore: true });
+  const a = open('/ws/term?address=t1');
+  await waitFor(() => a.closed !== null);
+  assert.equal(a.closed, 1013);
+  store.reset({ seq: 1, terminals: [] }, { emitTransitions: false });
+  const b = open('/ws/term?address=t1');
+  await waitFor(() => b.closed !== null);
+  assert.equal(b.closed, 4404);
+});
+
+test('M7: a terminal without cols/rows gets its size from hc get', async () => {
+  await restart({ terminal: { cols: undefined, rows: undefined } });
+  fs.writeFileSync(path.join(dir, 'get.json'), JSON.stringify({ address: 't1', state: 'live', cols: 132, rows: 50 }));
+  const c = open('/ws/term?address=t1');
+  await waitFor(() => c.msgs.length >= 2);
+  assert.deepEqual(c.msgs[0], { type: 'size', cols: 132, rows: 50 });
+  assert.deepEqual(c.msgs[1], SCREEN);
+  const calls = fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8');
+  assert.ok(calls.includes('["get","t1","--json"]'));
+  store.apply({ type: 'turn', terminal: 't1', seq: 2, data: { turn: 2 } });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(c.msgs.filter((m) => m.type === 'size').length, 1);
+});
+
+test('M7: falls back to 120x40 when hc get fails', async () => {
+  await restart({ terminal: { cols: undefined, rows: undefined } });
+  const c = open('/ws/term?address=t1');
+  await waitFor(() => c.msgs.length >= 2);
+  assert.deepEqual(c.msgs[0], { type: 'size', cols: 120, rows: 40 });
 });
 
 test('unknown or invalid address closes 4404; incoming messages are ignored', async () => {

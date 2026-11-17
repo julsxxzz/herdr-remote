@@ -7,6 +7,9 @@ const LIST_THROTTLE_MS = 250;
 const DEFAULT_HISTORY = 200;
 const MAX_HISTORY = 2000;
 const MAX_CLIENT_MESSAGE = 1024; // only tiny control messages are ever expected
+const FALLBACK_COLS = 120;
+const FALLBACK_ROWS = 40;
+const isSize = (n) => Number.isInteger(n) && n > 0;
 
 function refuse(socket, status, text) {
   socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
@@ -67,6 +70,8 @@ export function attachWebSockets(server, {
   }
 
   function termSocket(ws, address, history) {
+    // Before the first snapshot nothing is known yet: ask the client to retry (it reconnects on 1013).
+    if (!store.ready) return ws.close(1013, 'not ready');
     const item = store.get(address);
     if (!item) return ws.close(4404, 'not found');
     if (observers >= maxObservers) return ws.close(4429, 'too many');
@@ -83,6 +88,7 @@ export function attachWebSockets(server, {
       const cur = store.get(address);
       if (!cur) return end(); // finished or removed while watched
       if (ws.readyState !== ws.OPEN) return;
+      if (!isSize(cur.cols) || !isSize(cur.rows)) return; // ls fallback carries no size
       if (cur.cols !== lastCols || cur.rows !== lastRows) {
         lastCols = cur.cols;
         lastRows = cur.rows;
@@ -110,33 +116,60 @@ export function attachWebSockets(server, {
       release();
     };
 
-    sendSize();
-    store.on('changed', onChanged);
+    // The observer stopped but the terminal is still there: let the client reconnect.
+    const onChildExit = () => {
+      if (finished) return;
+      if (!store.get(address)) return end();
+      finished = true;
+      if (ws.readyState === ws.OPEN) ws.close(1011, 'observer stopped');
+      release();
+    };
+
     ws.on('close', release);
     ws.on('error', release);
     // Read-only: nothing arriving on a term socket is ever acted on.
     ws.on('message', () => {});
 
-    try {
-      child = hc.observe(address, { history });
-    } catch (err) {
-      log('observe failed', err);
-      return end();
-    }
-    child.on('error', (err) => {
-      log('observe error', err);
-      end();
-    });
-    child.on('close', end);
-    child.stderr?.resume();
-    child.stdout?.on('data', (chunk) => {
-      if (ws.readyState !== ws.OPEN) return;
-      ws.send(chunk, { binary: true });
-      if (ws.bufferedAmount > maxBufferedBytes) {
-        ws.close(1013, 'slow client');
-        release();
+    const begin = () => {
+      if (released || ws.readyState !== ws.OPEN) return release();
+      sendSize();
+      store.on('changed', onChanged);
+      try {
+        child = hc.observe(address, { history });
+      } catch (err) {
+        log('observe failed', err);
+        return end();
       }
-    });
+      child.on('error', (err) => {
+        log('observe error', err);
+        end();
+      });
+      child.on('close', onChildExit);
+      child.stderr?.resume();
+      child.stdout?.on('data', (chunk) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(chunk, { binary: true });
+        if (ws.bufferedAmount > maxBufferedBytes) {
+          ws.close(1013, 'slow client');
+          release();
+        }
+      });
+    };
+
+    if (isSize(lastCols) && isSize(lastRows)) return begin();
+    // Started from the ls fallback, which has no size: ask hc for it.
+    Promise.resolve()
+      .then(() => hc.get(address))
+      .then((t) => {
+        if (!isSize(t?.cols) || !isSize(t?.rows)) throw new Error('no size');
+        lastCols = t.cols;
+        lastRows = t.rows;
+      })
+      .catch(() => {
+        lastCols = FALLBACK_COLS;
+        lastRows = FALLBACK_ROWS;
+      })
+      .then(begin);
   }
 
   function onUpgrade(req, socket, head) {

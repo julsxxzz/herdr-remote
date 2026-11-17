@@ -3,11 +3,21 @@
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
+// Resolve against our origin and refuse anything that lands elsewhere (e.g. "/\evil", "//evil").
+function sameOriginUrl(raw) {
+  const origin = self.location.origin;
+  try {
+    const u = new URL(typeof raw === 'string' ? raw : '/', origin);
+    if (u.origin === origin) return u.href;
+  } catch { /* fall through */ }
+  return origin + '/';
+}
+
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
   const title = typeof data.title === 'string' && data.title ? data.title : 'herdr-remote';
-  const url = typeof data.url === 'string' && data.url.startsWith('/') && !data.url.startsWith('//') ? data.url : '/';
+  const url = sameOriginUrl(data.url);
   event.waitUntil(self.registration.showNotification(title, {
     body: typeof data.body === 'string' ? data.body : '',
     tag: typeof data.tag === 'string' && data.tag ? data.tag : 'herdr-remote',
@@ -20,7 +30,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = new URL(event.notification.data?.url ?? '/', self.location.origin).href;
+  const url = sameOriginUrl(event.notification.data?.url);
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const client = windows.find((c) => new URL(c.url).origin === self.location.origin);
