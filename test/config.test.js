@@ -151,7 +151,11 @@ test('npm: migrateLegacyHome copies and keeps the old folder when the rename fai
   const { env, oldDir, newDir } = appData();
   fs.mkdirSync(oldDir);
   fs.writeFileSync(path.join(oldDir, 'config.json'), '{"port":4782}');
-  const fsImpl = { ...fs, renameSync: () => { throw Object.assign(new Error('busy'), { code: 'EPERM' }); } };
+  // Only moving the old folder fails (held open); renaming the finished copy into place works.
+  const fsImpl = { ...fs, renameSync: (src, dst) => {
+    if (src === oldDir) throw Object.assign(new Error('busy'), { code: 'EPERM' });
+    return fs.renameSync(src, dst);
+  } };
   const lines = [];
   const r = migrateLegacyHome({ env, log: (m) => lines.push(m), fsImpl });
   assert.equal(r.mode, 'copied');
@@ -159,6 +163,35 @@ test('npm: migrateLegacyHome copies and keeps the old folder when the rename fai
   assert.equal(loadConfig(oldDir).port, 4782);
   assert.equal(lines.length, 1);
   assert.match(lines[0], /Copied.*EPERM.*old folder is kept/);
+  assert.deepEqual(fs.readdirSync(path.dirname(newDir)).sort(), ['herdr-remote', 'remote-for-herdr']); // no temp copy left
+});
+
+test('fix: a copy that fails half-way leaves no new folder (temp copy removed), the old one untouched, and throws', () => {
+  const { env, oldDir, newDir } = appData();
+  fs.mkdirSync(oldDir);
+  fs.writeFileSync(path.join(oldDir, 'config.json'), '{"port":4783}');
+  fs.writeFileSync(path.join(oldDir, 'state.json'), '{}');
+  const fsImpl = {
+    ...fs,
+    renameSync: (src, dst) => {
+      if (src === oldDir) throw Object.assign(new Error('busy'), { code: 'EPERM' });
+      return fs.renameSync(src, dst);
+    },
+    cpSync: (src, dst) => { // copies one file, then fails
+      fs.mkdirSync(dst, { recursive: true });
+      fs.copyFileSync(path.join(src, 'config.json'), path.join(dst, 'config.json'));
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    },
+  };
+  const lines = [];
+  assert.throws(() => migrateLegacyHome({ env, log: (m) => lines.push(m), fsImpl, pid: 77 }), /disk full/);
+  assert.equal(fs.existsSync(newDir), false);
+  assert.equal(fs.existsSync(`${newDir}.migrating-77`), false);
+  assert.deepEqual(fs.readdirSync(oldDir).sort(), ['config.json', 'state.json']);
+  assert.deepEqual(lines, []);
+  // The next run tries again.
+  assert.equal(migrateLegacyHome({ env, log: () => {} }).mode, 'moved');
+  assert.equal(loadConfig(newDir).port, 4783);
 });
 
 test('npm: migrateLegacyHome does nothing with --home, an env home, an existing new folder, or no old folder', () => {

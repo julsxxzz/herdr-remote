@@ -53,7 +53,7 @@ export const legacyConfigDir = ({ env = process.env, platform = process.platform
 // rename first (instant, keeps everything); if that fails (e.g. a file is held open) the folder is
 // copied and the old one kept. Returns null when there was nothing to do, else
 // { from, to, mode: 'moved' | 'copied' }.
-export function migrateLegacyHome({ env = process.env, platform = process.platform, home, log = () => {}, fsImpl = fs } = {}) {
+export function migrateLegacyHome({ env = process.env, platform = process.platform, home, log = () => {}, fsImpl = fs, pid = process.pid } = {}) {
   if (explicitHome({ env, home })) return null;
   const to = configDir({ env, platform });
   const from = legacyConfigDir({ env, platform });
@@ -64,7 +64,17 @@ export function migrateLegacyHome({ env = process.env, platform = process.platfo
     log(`Moved your herdr-remote config from ${from} to ${to}.`);
     return { from, to, mode: 'moved' };
   } catch (err) {
-    fsImpl.cpSync(from, to, { recursive: true, errorOnExist: false });
+    // Copy next to it, then rename into place: a copy that fails half-way must never become the
+    // config folder (it would be used from then on, with files missing). The old folder is untouched.
+    const tmp = `${to}.migrating-${pid}`;
+    try {
+      fsImpl.rmSync(tmp, { recursive: true, force: true });
+      fsImpl.cpSync(from, tmp, { recursive: true });
+      fsImpl.renameSync(tmp, to);
+    } catch (copyErr) {
+      try { fsImpl.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+      throw copyErr;
+    }
     log(`Copied your herdr-remote config from ${from} to ${to} (could not move it: ${err.code ?? err.message}; the old folder is kept, delete it when you like).`);
     return { from, to, mode: 'copied' };
   }
