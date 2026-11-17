@@ -16,7 +16,9 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
   const cfg = loadConfig(home);
   const state = loadState(home);
   const errors = validateConfig(cfg);
-  if (errors.length) throw new Error('Run "npm run setup" first: ' + errors.join('; '));
+  if (errors.length) {
+    throw Object.assign(new Error('Run "npm run setup" first: ' + errors.join('; ')), { code: 'SETUP_REQUIRED' });
+  }
 
   const hc = hcOverride ?? createHc({ command: cfg.hcPath ?? 'hc' });
   const save = (s = state) => saveState(home, s);

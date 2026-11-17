@@ -47,10 +47,17 @@ export function superviseServer({
     child = fork(entry, args, { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
     child.stdout.on('data', (d) => log.write(String(d)));
     child.stderr.on('data', (d) => log.write(String(d)));
-    child.on('error', (err) => note(`child error: ${err.message}`));
-    child.on('exit', (code, signal) => {
+    let ended = false;
+    const onEnd = (code, signal) => {
+      if (ended) return;
+      ended = true;
       child = null;
       if (stopped) return;
+      if (code === 0) {
+        note('server exited cleanly; not restarting.');
+        finish({ reason: 'exited' });
+        return;
+      }
       if (code === EXIT_SETUP_REQUIRED) {
         note('server needs setup; not restarting. Run "npm run setup".');
         finish({ reason: 'setup-required' });
@@ -61,7 +68,9 @@ export function superviseServer({
       attempt += 1;
       note(`server exited (code ${code}, signal ${signal}); restarting in ${delay} ms`);
       timer = setTimeout(launch, delay);
-    });
+    };
+    child.on('error', (err) => { note(`child error: ${err.message}`); onEnd(null, null); });
+    child.on('exit', onEnd);
   };
   launch();
 

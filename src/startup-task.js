@@ -5,9 +5,10 @@ import { spawn } from 'node:child_process';
 const TASK_NAME = 'herdr-remote';
 
 export function taskCommands({ nodePath, cliPath, home }) {
-  const vbsPath = path.win32.join(home, 'start-hidden.vbs');
+  const absHome = path.win32.resolve(home);
+  const vbsPath = path.win32.join(absHome, 'start-hidden.vbs');
   return {
-    vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start", 0, False\n`,
+    vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start --home ""${absHome}""", 0, False\n`,
     create: [
       'schtasks', '/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', TASK_NAME,
       '/TR', `wscript.exe "${vbsPath}"`,

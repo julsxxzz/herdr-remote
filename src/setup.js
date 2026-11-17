@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { configDir, loadConfig, saveConfig, loadState, saveState } from './config.js';
+import { configDir, loadConfig, saveConfig, loadState, saveState, validateConfig } from './config.js';
 import { hashPin, isAcceptablePin } from './auth.js';
 import { generateVapidKeys } from './push.js';
 import { runCommand, installTask as realInstallTask } from './startup-task.js';
@@ -82,6 +82,7 @@ export async function runSetup({
     cfg.access = 'proxy';
     const dfltOrigin = prev.publicOrigin ?? '';
     cfg.publicOrigin = await ask(`Public origin (e.g. https://remote.example.com)${dfltOrigin ? ` [${dfltOrigin}]` : ''}: `, dfltOrigin);
+    if (cfg.publicOrigin.startsWith('http:')) log('WARNING: plain http:// origin. Only use this for localhost testing; phones need https for push and install.');
     if (!/^https?:\/\/[^/\s]+$/.test(cfg.publicOrigin)) throw new Error('Public origin must look like https://host (no path).');
     const header = await ask('Identity header name (optional, empty = none): ');
     cfg.proxyIdentityHeader = header || null;
@@ -90,6 +91,7 @@ export async function runSetup({
     const r = await exec('tailscale', ['status', '--json']).catch(() => ({ code: 127, stdout: '' }));
     let ts = null;
     try { ts = parseTailscaleStatus(JSON.parse(r.stdout)); } catch { /* not JSON */ }
+    if (r.code === 127) throw new Error('Tailscale CLI not found. Install Tailscale (and make sure "tailscale" is on PATH), then re-run setup.');
     if (!ts?.running) throw new Error('Tailscale is not running. Start Tailscale and sign in, then re-run setup.');
     if (!ts.httpsReady) throw new Error('Tailscale HTTPS is not ready. Enable HTTPS certificates in the Tailscale admin console → DNS, then re-run setup.');
     cfg.access = 'tailscale';
@@ -102,6 +104,14 @@ export async function runSetup({
   cfg.pinHash = await askPin({ prompt, log, existing: prev.pinHash });
   if (!cfg.vapid) cfg.vapid = generateVapidKeys();
 
+  const errs = validateConfig(cfg);
+  if (errs.length) {
+    errs.forEach((e) => log(`Invalid config: ${e}`));
+    throw new Error('Refusing to save an invalid config: ' + errs.join('; '));
+  }
+
+  const identityChanged = proxy && (prev.proxyIdentityHeader !== cfg.proxyIdentityHeader || prev.proxyIdentityValue !== cfg.proxyIdentityValue);
+  if (identityChanged) state.sessions = {};
   if (prev.publicOrigin !== cfg.publicOrigin || prev.allowedLogin !== cfg.allowedLogin) {
     state.subscriptions = [];
     state.sessions = {};

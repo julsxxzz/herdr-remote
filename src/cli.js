@@ -56,9 +56,10 @@ async function foreground(home) {
     running = await startServer({ home, log: console });
   } catch (err) {
     console.error(err.message);
-    process.exit(String(err.message).startsWith('Run "npm run setup"') ? EXIT_SETUP_REQUIRED : 1);
+    process.exit(err.code === 'SETUP_REQUIRED' ? EXIT_SETUP_REQUIRED : 1);
   }
   const shutdown = async () => { await running.stop(); process.exit(0); };
+  process.on('disconnect', shutdown); // supervisor gone: don't hold the port
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
 }

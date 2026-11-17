@@ -44,3 +44,14 @@ test('rotates the log at the size limit', async () => {
     await sup.stop();
   }
 });
+
+test('does not restart after a clean exit (code 0)', async () => {
+  const home = tmp();
+  const script = path.join(home, 'ok.mjs');
+  fs.writeFileSync(script, 'console.log("bye-once");');
+  const sup = superviseServer({ home, entry: script, args: [], backoffMs: [20] });
+  assert.equal((await sup.done).reason, 'exited');
+  await new Promise((r) => setTimeout(r, 150));
+  const text = fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8');
+  assert.equal((text.match(/bye-once/g) ?? []).length, 1);
+});

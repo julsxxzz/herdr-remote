@@ -195,3 +195,42 @@ test('runSetup: accepting serve and start-at-login runs them', async () => {
   assert.ok(calls.some((c) => c.join(' ') === 'tailscale serve --bg 4780'));
   assert.equal(installed, 1);
 });
+
+test('runSetup tailscale: missing CLI reports not installed', async () => {
+  const exec = async (cmd) => (cmd === 'tailscale'
+    ? { code: 127, stdout: '', stderr: 'ENOENT' }
+    : { code: 0, stdout: '{"terminals":[]}', stderr: '' });
+  await assert.rejects(runSetup({ home: tmp(), prompt: scripted([]).prompt, exec, log: () => {} }), /Tailscale CLI not found/);
+});
+
+test('runSetup proxy: warns on http origin; identity change clears sessions; invalid config not saved', async () => {
+  const home = tmp();
+  const { exec } = stubExec();
+  const out = quiet();
+  const run = (origin, header, value) => runSetup({
+    home, proxy: true, exec, log: out.log,
+    prompt: scripted([
+      [/public origin/i, [origin]],
+      [/identity header name/i, [header]],
+      [/identity header value/i, [value]],
+      [/^PIN/, ['hunter22']],
+      [/^Confirm PIN/, ['hunter22']],
+      [/keep current PIN/i, ['y']],
+      [/start at login/i, ['n']],
+    ]).prompt,
+  });
+  await run('http://localhost:4780', 'X-Auth-User', 'owner@example.com');
+  assert.ok(out.lines.some((l) => /plain http/i.test(l)));
+  const st = loadState(home);
+  st.sessions = { abc: { createdAt: 1 } };
+  saveState(home, st);
+  await run('http://localhost:4780', 'X-Auth-User', 'other@example.com');
+  assert.deepEqual(loadState(home).sessions, {});
+
+  const bad = tmp();
+  await assert.rejects(runSetup({
+    home: bad, proxy: true, exec, log: () => {},
+    prompt: scripted([[/public origin/i, ['']]]).prompt,
+  }), /Public origin/);
+  assert.equal(fs.existsSync(path.join(bad, 'config.json')), false);
+});
