@@ -52,6 +52,23 @@ export function anchoredScroll({ fromScale, toScale, scrollLeft, scrollTop, from
   };
 }
 
+// One pinch frame, incremental: the zoom ratio comes from the previous frame's finger
+// distance and the anchor is the previous → current midpoint, applied to the LIVE scroll
+// offsets, so a native scroll the browser did between frames combines with the zoom.
+// prev/next: { dist, x, y } with x, y relative to the scroll container.
+export function pinchStep({ scale, scrollLeft, scrollTop, prev, next }) {
+  const toScale = pinchScale(scale, prev.dist, next.dist);
+  return {
+    scale: toScale,
+    ...anchoredScroll({ fromScale: scale, toScale, scrollLeft, scrollTop, fromX: prev.x, fromY: prev.y, toX: next.x, toY: next.y }),
+  };
+}
+
+export function zoomAriaLabel(state, scale) {
+  const pct = Math.round((Number.isFinite(scale) && scale > 0 ? scale : 1) * 100); // Fit may exceed MAX_ZOOM
+  return state.mode === 'fit' ? `Zoom ${pct}%, fitted to width` : `Zoom ${pct}%, fit to width`;
+}
+
 // Ctrl/⌘ + wheel: deltaY < 0 (wheel up / trackpad spread) zooms in. 300 px of delta doubles the scale.
 export function wheelScale(scale, deltaY) {
   if (!Number.isFinite(deltaY)) return clampZoom(scale);
@@ -77,7 +94,7 @@ export function readZoomPref(storage) {
     if (old === null) return { ...DEFAULT_STATE };
     const state = old === '100' ? { mode: 'manual', zoom: 1 } : { ...DEFAULT_STATE };
     saveZoomPref(storage, state);
-    storage.removeItem(OLD_STORAGE_KEY);
+    try { storage.removeItem(OLD_STORAGE_KEY); } catch { /* the migrated value still stands */ }
     return state;
   } catch {
     return { ...DEFAULT_STATE };

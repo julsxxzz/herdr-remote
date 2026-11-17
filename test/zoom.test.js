@@ -4,16 +4,18 @@ import {
   MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, MIN_FIT_SCALE,
   clampZoom, fitScale, effectiveScale, zoomIn, zoomOut, zoomLabel,
   pinchScale, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
+  pinchStep, zoomAriaLabel,
 } from '../public/zoom.js';
 
-// In-memory stand-in for localStorage; `fail` makes every call throw like a blocked storage.
-function memStorage(init = {}, { fail = false } = {}) {
+// In-memory stand-in for localStorage; `fail` makes every call throw like a blocked storage,
+// `failRemove` only removeItem.
+function memStorage(init = {}, { fail = false, failRemove = false } = {}) {
   const data = new Map(Object.entries(init));
   return {
     data,
     getItem(k) { if (fail) throw new Error('blocked'); return data.has(k) ? data.get(k) : null; },
     setItem(k, v) { if (fail) throw new Error('blocked'); data.set(k, String(v)); },
-    removeItem(k) { if (fail) throw new Error('blocked'); data.delete(k); },
+    removeItem(k) { if (fail || failRemove) throw new Error('blocked'); data.delete(k); },
   };
 }
 
@@ -61,7 +63,7 @@ test('zoomIn/zoomOut step by 1.25 from the current scale, clamped, and switch to
 });
 
 test('zoomLabel shows Fit or a whole percentage', () => {
-  assert.equal(zoomLabel({ mode: 'fit', zoom: 1 }, 0.62), 'Fit');
+  assert.equal(zoomLabel({ mode: 'fit', zoom: 1 }), 'Fit');
   assert.equal(zoomLabel({ mode: 'manual', zoom: 0.85 }), '85%');
   assert.equal(zoomLabel({ mode: 'manual', zoom: 0.625 }), '63%');
   assert.equal(zoomLabel({ mode: 'manual', zoom: 2 }), '200%');
@@ -145,4 +147,69 @@ test('saveZoomPref round-trips through readZoomPref', () => {
   assert.deepEqual(readZoomPref(s), { mode: 'manual', zoom: 1.5625 });
   saveZoomPref(s, { mode: 'fit', zoom: 1 });
   assert.deepEqual(readZoomPref(s), { mode: 'fit', zoom: 1 });
+});
+
+// Content coordinate (unscaled px) currently under area point (x, y).
+const contentAt = (st, x, y) => [(st.scrollLeft + x) / st.scale, (st.scrollTop + y) / st.scale];
+
+test('pinchStep: over a sequence of frames the content under the midpoint stays put', () => {
+  const frames = [
+    { dist: 100, x: 200, y: 300 },
+    { dist: 120, x: 210, y: 300 },
+    { dist: 150, x: 220, y: 310 },
+    { dist: 140, x: 215, y: 305 },
+    { dist: 200, x: 220, y: 310 },
+  ];
+  let st = { scale: 1, scrollLeft: 100, scrollTop: 50 };
+  const origin = contentAt(st, frames[0].x, frames[0].y);
+  for (let i = 1; i < frames.length; i++) {
+    st = pinchStep({ ...st, prev: frames[i - 1], next: frames[i] });
+    const [cx, cy] = contentAt(st, frames[i].x, frames[i].y);
+    near(cx, origin[0]);
+    near(cy, origin[1]);
+  }
+  near(st.scale, 2);
+});
+
+test('pinchStep: clamps at the limits and keeps the anchor at the effective ratio', () => {
+  const prev = { dist: 100, x: 100, y: 100 };
+  const st = pinchStep({ scale: 1.9, scrollLeft: 300, scrollTop: 300, prev, next: { dist: 200, x: 100, y: 100 } });
+  assert.equal(st.scale, MAX_ZOOM);
+  near(contentAt(st, 100, 100)[0], (300 + 100) / 1.9);
+  // Spreading further at the limit only follows the midpoint.
+  const at = pinchStep({ ...st, prev: { dist: 200, x: 100, y: 100 }, next: { dist: 400, x: 120, y: 100 } });
+  assert.equal(at.scale, MAX_ZOOM);
+  near(at.scrollLeft, st.scrollLeft - 20);
+  const low = pinchStep({ scale: 0.3, scrollLeft: 0, scrollTop: 0, prev, next: { dist: 10, x: 100, y: 100 } });
+  assert.equal(low.scale, MIN_ZOOM);
+});
+
+test('pinchStep: a native scroll between frames is kept, not overwritten', () => {
+  const prev = { dist: 100, x: 150, y: 150 };
+  const same = { dist: 100, x: 150, y: 150 };
+  const a = pinchStep({ scale: 1, scrollLeft: 200, scrollTop: 100, prev, next: same });
+  const b = pinchStep({ scale: 1, scrollLeft: 230, scrollTop: 110, prev, next: same }); // browser panned 30/10
+  near(b.scrollLeft - a.scrollLeft, 30);
+  near(b.scrollTop - a.scrollTop, 10);
+  const bigger = { dist: 200, x: 150, y: 150 };
+  const c = pinchStep({ scale: 1, scrollLeft: 200, scrollTop: 100, prev, next: bigger });
+  const d = pinchStep({ scale: 1, scrollLeft: 230, scrollTop: 100, prev, next: bigger });
+  near(d.scrollLeft - c.scrollLeft, 60); // the delta scales with the zoom
+});
+
+test('pinchStep: a degenerate distance leaves the scale alone', () => {
+  const st = pinchStep({ scale: 0.8, scrollLeft: 10, scrollTop: 10, prev: { dist: 0, x: 0, y: 0 }, next: { dist: 50, x: 0, y: 0 } });
+  assert.equal(st.scale, 0.8);
+});
+
+test('zoomAriaLabel names the current zoom and the action', () => {
+  assert.equal(zoomAriaLabel({ mode: 'manual', zoom: 0.8 }, 0.8), 'Zoom 80%, fit to width');
+  assert.equal(zoomAriaLabel({ mode: 'fit', zoom: 1 }, 0.5), 'Zoom 50%, fitted to width');
+  assert.equal(zoomAriaLabel({ mode: 'fit', zoom: 1 }, 2.6), 'Zoom 260%, fitted to width'); // narrow terminal, wide screen
+});
+
+test('migration still returns the migrated value when removeItem throws', () => {
+  const s = memStorage({ 'hr.fit': '100' }, { failRemove: true });
+  assert.deepEqual(readZoomPref(s), { mode: 'manual', zoom: 1 });
+  assert.deepEqual(JSON.parse(s.data.get('hr.zoom')), { mode: 'manual', zoom: 1 });
 });
