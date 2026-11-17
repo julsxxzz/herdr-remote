@@ -1,23 +1,50 @@
 {
-  "name": "herdr-remote",
+  "name": "remote-for-herdr",
   "version": "0.1.0",
-  "description": "Remote, read-only-by-default web view for Herdr terminals",
+  "description": "Unofficial phone web app for Herdr: watch and answer your coding-agent terminals from your phone over Tailscale, with push notifications",
+  "keywords": [
+    "herdr",
+    "coding-agents",
+    "claude-code",
+    "tailscale",
+    "remote",
+    "phone",
+    "terminal"
+  ],
+  "homepage": "https://github.com/julsxxzz/remote-for-herdr#readme",
+  "bugs": {
+    "url": "https://github.com/julsxxzz/remote-for-herdr/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/julsxxzz/remote-for-herdr.git"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22"
   },
   "bin": {
+    "remote-for-herdr": "src/cli.js",
     "herdr-remote": "src/cli.js"
   },
+  "files": [
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE",
+    "docs/e2e-checklist.md"
+  ],
   "scripts": {
     "start": "node src/cli.js start",
     "setup": "node src/cli.js setup",
     "dev": "node src/cli.js start --foreground --home .dev",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@xterm/xterm": "^6.0.0",
+    "uqr": "^0.1.3",
     "web-push": "^4.0.0",
     "ws": "^8.23.0"
   }

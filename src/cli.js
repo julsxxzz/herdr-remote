@@ -4,27 +4,34 @@ import readline from 'node:readline';
 import { Writable } from 'node:stream';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { configDir } from './config.js';
+import { configDir, explicitHome, legacyConfigDir } from './config.js';
 import { startServer } from './main.js';
 import { runSetup } from './setup.js';
 import {
   superviseServer, stopRunning, claimPidFile, alreadyRunningMessage, createLog, EXIT_SETUP_REQUIRED,
 } from './supervisor.js';
 import { installTask, uninstallTask } from './startup-task.js';
+import { getStatus, formatStatus, restart, migrateFromHerdrRemote, cliCommand, legacyPending } from './control.js';
+
+const MIGRATING_COMMANDS = ['setup', 'start', 'restart', 'install-task'];
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
-const HELP = `herdr-remote - remote web view for Herdr terminals
+const HELP = `remote-for-herdr - phone web app for Herdr terminals (unofficial, not affiliated with Herdr)
 
 Usage:
-  herdr-remote start [--foreground [--log]] [--home <dir>]
-                                                     run the server (restarts on crash unless --foreground;
-                                                     --log writes its output to <home>\\logs\\server.log)
-  herdr-remote stop [--home <dir>]                   stop the running server
-  herdr-remote setup [--proxy] [--home <dir>]        interactive setup (stop the server first)
-  herdr-remote install-task [--home <dir>]           start at Windows login (Task Scheduler)
-  herdr-remote uninstall-task [--home <dir>]         remove the login task
-  herdr-remote --help
+  remote-for-herdr setup [--proxy] [--home <dir>]        interactive setup; offers start-at-login and starts it
+  remote-for-herdr status [--home <dir>]                 running? pid, phone URL, start-at-login task
+  remote-for-herdr start [--foreground [--log]] [--home <dir>]
+                                                         run the server (restarts on crash unless --foreground;
+                                                         --log writes its output to <home>\\logs\\server.log)
+  remote-for-herdr stop [--home <dir>]                   stop the running server
+  remote-for-herdr restart [--home <dir>]                stop, then start it again (via the login task if installed)
+  remote-for-herdr install-task [--home <dir>]           start at Windows login (Task Scheduler)
+  remote-for-herdr uninstall-task [--home <dir>]         remove the login task
+  remote-for-herdr --help
+
+Config folder: %APPDATA%\\remote-for-herdr (or --home, or REMOTE_FOR_HERDR_HOME).
 `;
 
 // Line prompt; with {secret:true} the typed characters are not echoed.
@@ -75,7 +82,7 @@ function logToFile(home) {
 async function foreground(home, { log = false } = {}) {
   if (log) logToFile(home);
   // Under the supervisor (IPC channel present) the supervisor owns server.pid and stop requests;
-  // a standalone --foreground run owns them itself so "herdr-remote stop" works for it too.
+  // a standalone --foreground run owns them itself so "remote-for-herdr stop" works for it too.
   const supervised = typeof process.send === 'function';
   let shutdown = null;
   let stopRequested = false; // a stop request that arrived before the server was up
@@ -121,7 +128,14 @@ async function main(argv) {
     args: rest,
     options: { foreground: { type: 'boolean' }, log: { type: 'boolean' }, proxy: { type: 'boolean' }, home: { type: 'string' } },
   });
+  // One-time move from herdr-remote (the old name) to the new default config folder, only for the
+  // commands that set up or start it ("status" just mentions it, below).
+  if (MIGRATING_COMMANDS.includes(command)) {
+    await migrateFromHerdrRemote({ home: values.home, cliPath: CLI_PATH, restartFollows: command === 'restart' });
+  }
   const home = configDir({ home: values.home });
+  const legacyHome = explicitHome({ home: values.home }) ? null : legacyConfigDir();
+  const cmd = cliCommand(CLI_PATH);
 
   switch (command) {
     case 'start': {
@@ -135,10 +149,10 @@ async function main(argv) {
         console.error(alreadyRunningMessage(r.pid, home));
         process.exitCode = EXIT_SETUP_REQUIRED;
       } else if (r.reason === 'error') {
-        console.error(`herdr-remote could not start: ${r.message}`);
+        console.error(`remote-for-herdr could not start: ${r.message}`);
         process.exitCode = 1;
       } else if (r.reason === 'setup-required') {
-        console.error('herdr-remote could not start: it needs setup ("npm run setup") or its port is already in use (see logs/server.log).');
+        console.error(`remote-for-herdr could not start: it needs setup ("${cmd} setup") or its port is already in use (see logs/server.log).`);
         process.exitCode = EXIT_SETUP_REQUIRED;
       }
       return;
@@ -146,7 +160,7 @@ async function main(argv) {
     case 'stop': {
       const r = await stopRunning({ home });
       if (r.startsWith('timeout')) {
-        console.error(`herdr-remote did not stop in time: ${r} (see logs/server.log).`);
+        console.error(`remote-for-herdr did not stop in time: ${r} (see logs/server.log).`);
         process.exitCode = 1;
       } else console.log(r);
       return;
@@ -160,13 +174,23 @@ async function main(argv) {
       }
       return;
     }
+    case 'restart':
+      await restart({ home, cliPath: CLI_PATH });
+      return;
+    case 'status':
+      if (legacyPending({ home: values.home })) {
+        console.log(`Old herdr-remote config found in ${legacyConfigDir()}; run "${cmd} restart" to move it.`);
+      }
+      console.log(formatStatus(await getStatus({ home }), { cmd }));
+      return;
     case 'install-task':
-      await installTask({ home, cliPath: CLI_PATH });
-      console.log('Installed the "herdr-remote" start-at-login task.');
+      await installTask({ home, cliPath: CLI_PATH, legacyHome });
+      console.log('Installed the "remote-for-herdr" start-at-login task.');
+      console.log(`Start it now with: ${cmd} restart`);
       return;
     case 'uninstall-task':
-      await uninstallTask({ home, cliPath: CLI_PATH });
-      console.log('Removed the "herdr-remote" start-at-login task.');
+      await uninstallTask({ home, cliPath: CLI_PATH, legacyHome });
+      console.log('Removed the "remote-for-herdr" start-at-login task.');
       return;
     default:
       process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);

@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, loadState, saveState, validateConfig } from './config.js';
 import { createHc } from './hc.js';
@@ -10,14 +12,20 @@ import { createPush } from './push.js';
 import { createNotifier } from './notifier.js';
 
 const repo = new URL('..', import.meta.url);
-const FALLBACK_SUBJECT = 'mailto:herdr-remote@example.invalid';
+// The installed @xterm/xterm folder, found the way Node finds the package: it may be hoisted out of
+// this package's own node_modules (global install, npx cache), so no fixed path under the repo.
+export function xtermDir({ resolve = createRequire(import.meta.url).resolve } = {}) {
+  return path.dirname(resolve('@xterm/xterm/package.json'));
+}
+
+const FALLBACK_SUBJECT = 'mailto:remote-for-herdr@example.invalid';
 
 export async function startServer({ home, log = console, hcOverride, webpushOverride } = {}) {
   const cfg = loadConfig(home);
   const state = loadState(home);
   const errors = validateConfig(cfg);
   if (errors.length) {
-    throw Object.assign(new Error('Run "npm run setup" first: ' + errors.join('; ')), { code: 'SETUP_REQUIRED' });
+    throw Object.assign(new Error('Run "remote-for-herdr setup" first: ' + errors.join('; ')), { code: 'SETUP_REQUIRED' });
   }
 
   const hc = hcOverride ?? createHc({ command: cfg.hcPath ?? 'hc' });
@@ -39,7 +47,7 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
   const server = createServer({
     config: cfg, state, saveState: save, hc, store, sessions, limiter, push,
     publicDir: fileURLToPath(new URL('public', repo)),
-    vendorDir: fileURLToPath(new URL('node_modules/@xterm/xterm', repo)),
+    vendorDir: xtermDir(),
     log: logWarn,
     onSettingsChanged: () => live?.broadcastList(), // R10
     onLogoutEverywhere: () => live?.disconnectAll(), // R11
@@ -56,7 +64,7 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
     watcher.stop();
     live.close();
     if (err.code === 'EADDRINUSE') {
-      throw Object.assign(new Error(`port ${cfg.port} already in use — is herdr-remote already running?`), { code: 'PORT_IN_USE' });
+      throw Object.assign(new Error(`port ${cfg.port} already in use — is remote-for-herdr already running?`), { code: 'PORT_IN_USE' });
     }
     throw err;
   }

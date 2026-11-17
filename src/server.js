@@ -229,7 +229,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
       return res.end();
     }
     if (pathname === '/api/push/test' && method === 'POST') {
-      return sendJson(res, 200, await push.sendAll({ title: 'herdr-remote', body: 'Test notification', address: null, tag: 'test', url: '/' }));
+      return sendJson(res, 200, await push.sendAll({ title: 'remote-for-herdr', body: 'Test notification', address: null, tag: 'test', url: '/' }));
     }
 
     return sendJson(res, 404, { error: 'not_found' });

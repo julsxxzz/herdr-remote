@@ -8,7 +8,7 @@ import net from 'node:net';
 import { spawn, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { startServer } from '../src/main.js';
+import { startServer, xtermDir } from '../src/main.js';
 import { createHc } from '../src/hc.js';
 import { hashPin } from '../src/auth.js';
 import { generateVapidKeys } from '../src/push.js';
@@ -134,7 +134,7 @@ function openList(cookie) {
 
 test('empty home rejects with setup hint', async () => {
   const { home } = mkdirs();
-  await assert.rejects(startServer({ home, log: silent }), (e) => e.message.startsWith('Run "npm run setup" first:'));
+  await assert.rejects(startServer({ home, log: silent }), (e) => e.message.startsWith('Run "remote-for-herdr setup" first:'));
 });
 
 test('starts, serves /, logs in, lists the fake terminals', async () => {
@@ -208,7 +208,7 @@ async function occupyPort() {
   await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
   return blocker;
 }
-const IN_USE = (p) => `port ${p} already in use — is herdr-remote already running?`;
+const IN_USE = (p) => `port ${p} already in use — is remote-for-herdr already running?`;
 
 test('M5: a second instance on a busy port rejects with PORT_IN_USE', async () => {
   const { home, fake } = mkdirs();
@@ -297,7 +297,7 @@ test('lighter: start --foreground --log puts a fatal error in the log file', asy
   child.stdout.resume();
   child.stderr.resume();
   assert.equal(await exitOf(child), 78);
-  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /npm run setup/);
+  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /remote-for-herdr setup/);
 });
 
 test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', async () => {
@@ -314,4 +314,21 @@ test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', 
   } finally {
     child.kill();
   }
+});
+
+test('npm: the vendor xterm files are served from wherever Node resolves @xterm/xterm', async () => {
+  await boot();
+  const js = await req('GET', '/vendor/xterm.js');
+  assert.equal(js.status, 200);
+  assert.equal(js.text, fs.readFileSync(path.join(xtermDir(), 'lib', 'xterm.js'), 'utf8'));
+  assert.equal((await req('GET', '/vendor/xterm.css')).status, 200);
+});
+
+test('npm: xtermDir is the folder of the resolved package.json (works when the dependency is hoisted)', () => {
+  const hoisted = path.join(os.tmpdir(), 'npm', 'node_modules', '@xterm', 'xterm');
+  const asked = [];
+  assert.equal(xtermDir({ resolve: (id) => { asked.push(id); return path.join(hoisted, 'package.json'); } }), hoisted);
+  assert.deepEqual(asked, ['@xterm/xterm/package.json']);
+  assert.ok(fs.existsSync(path.join(xtermDir(), 'lib', 'xterm.js')));
+  assert.ok(fs.existsSync(path.join(xtermDir(), 'css', 'xterm.css')));
 });

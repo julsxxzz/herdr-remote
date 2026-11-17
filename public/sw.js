@@ -16,11 +16,11 @@ function sameOriginUrl(raw) {
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
-  const title = typeof data.title === 'string' && data.title ? data.title : 'herdr-remote';
+  const title = typeof data.title === 'string' && data.title ? data.title : 'remote-for-herdr';
   const url = sameOriginUrl(data.url);
   event.waitUntil(self.registration.showNotification(title, {
     body: typeof data.body === 'string' ? data.body : '',
-    tag: typeof data.tag === 'string' && data.tag ? data.tag : 'herdr-remote',
+    tag: typeof data.tag === 'string' && data.tag ? data.tag : 'remote-for-herdr',
     data: { url },
     icon: '/icon.svg',
     badge: '/icon.svg',

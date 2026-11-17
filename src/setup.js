@@ -1,10 +1,12 @@
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { configDir, loadConfig, saveConfig, loadState, saveState, validateConfig } from './config.js';
+import { configDir, explicitHome, legacyConfigDir, loadConfig, saveConfig, loadState, saveState, validateConfig } from './config.js';
 import { hashPin, isAcceptablePin } from './auth.js';
 import { generateVapidKeys } from './push.js';
 import { runCommand, installTask as realInstallTask } from './startup-task.js';
+import {
+  CLI_PATH, cliCommand, qrText, runTaskAndWait, startDetachedAndWait, startDetached as realStartDetached, waitForServer,
+} from './control.js';
 
 export function parseTailscaleStatus(json) {
   const selfId = json?.Self?.UserID;
@@ -76,12 +78,15 @@ export async function runSetup({
   home, proxy = false, prompt, exec = runCommand, log = console.log,
   installTask = realInstallTask,
   isServerRunning = portAnswers,
-  cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)),
+  cliPath = CLI_PATH,
+  startDetached = realStartDetached,
+  waitUntilRunning = waitForServer,
+  qr = qrText,
 }) {
   const dir = configDir({ home });
   const prev = loadConfig(dir);
   // A running server keeps its config/state in memory and would undo this setup.
-  if (await isServerRunning(prev.port)) throw new Error('herdr-remote is running — stop it first: herdr-remote stop');
+  if (await isServerRunning(prev.port)) throw new Error('remote-for-herdr is running — stop it first: remote-for-herdr stop');
   const cfg = { ...prev };
   const state = loadState(dir);
   const ask = async (q, dflt = '') => {
@@ -93,7 +98,7 @@ export async function runSetup({
 
   if (proxy) {
     log('WARNING: proxy mode is unsupported. You are responsible for putting a TLS-terminating,');
-    log('authenticating reverse proxy in front of this server; herdr-remote cannot verify it.');
+    log('authenticating reverse proxy in front of this server; remote-for-herdr cannot verify it.');
     cfg.access = 'proxy';
     const dfltOrigin = prev.publicOrigin ?? '';
     cfg.publicOrigin = await ask(`Public origin (e.g. https://remote.example.com)${dfltOrigin ? ` [${dfltOrigin}]` : ''}: `, dfltOrigin);
@@ -141,12 +146,28 @@ export async function runSetup({
     const r = await exec('tailscale', ['serve', '--bg', String(cfg.port)]);
     log(r.code === 0 ? 'tailscale serve is configured.' : `tailscale serve failed: ${(r.stderr || r.stdout).trim()}`);
   }
-  if (isYes(await prompt('Start at login (Windows scheduled task)? [y/N] '), false)) {
-    try { await installTask({ home: dir, cliPath }); log('Start-at-login task installed.'); }
+  const atLogin = isYes(await prompt('Start at login (Windows scheduled task)? [Y/n] '), true);
+  let taskInstalled = false;
+  if (atLogin) {
+    const legacyHome = explicitHome({ home }) ? null : legacyConfigDir();
+    try { await installTask({ home: dir, cliPath, legacyHome }); taskInstalled = true; log('Start-at-login task installed.'); }
     catch (err) { log(`Could not install the task: ${err.message}`); }
   }
 
   log(`Config saved in ${path.resolve(dir)}`);
+  // Start it now, the way it will start at login: the task, or (when it could not be installed) a
+  // detached server. Declined: say how to start it.
+  const cmd = cliCommand(cliPath);
+  if (atLogin) {
+    let r;
+    if (taskInstalled) r = await runTaskAndWait({ exec, home: dir, port: cfg.port, waitUntilRunning });
+    else r = await startDetachedAndWait({ home: dir, port: cfg.port, cliPath, startDetachedImpl: startDetached, waitUntilRunning });
+    log(r.ok ? `remote-for-herdr is running${taskInstalled ? ' (start-at-login task)' : ''}.`
+      : `remote-for-herdr did not start: ${r.message}. Check ${path.join(path.resolve(dir), 'logs', 'server.log')}, then run: ${cmd} start`);
+  } else {
+    log(`Start it with: ${cmd} start`);
+  }
   log(`Open on your phone: ${cfg.publicOrigin}`);
+  try { log(qr(cfg.publicOrigin)); } catch { /* the URL above is enough */ }
   return cfg;
 }

@@ -56,7 +56,7 @@ function showLogin(message) {
   const submit = el('button', { type: 'submit', class: 'btn btn-primary btn-wide', text: 'Sign in' });
   const form = el('form', { class: 'login' },
     el('img', { src: '/icon.svg', alt: '', class: 'login-icon', width: '56', height: '56' }),
-    el('h1', { text: 'herdr-remote' }),
+    el('h1', { text: 'remote-for-herdr' }),
     el('p', { class: 'login-lead', text: 'Enter the PIN you chose during setup. This phone stays signed in for 30 days.' }),
     el('label', { for: 'pin', text: 'PIN' }),
     pin, msg, submit);
@@ -101,7 +101,7 @@ function buildShell() {
   settingsBtn.addEventListener('click', () => openSettings());
 
   const view = el('div', { class: 'view view-list' },
-    el('header', { class: 'app-head' }, el('h1', { text: 'herdr-remote' }), conn),
+    el('header', { class: 'app-head' }, el('h1', { text: 'remote-for-herdr' }), conn),
     list,
     el('footer', { class: 'app-foot' },
       el('div', { class: 'setting desk' },
@@ -187,11 +187,11 @@ async function boot() {
   if (r.ok && r.data?.signedIn) startApp();
   else if (r.status === 0 || r.status === 403) {
     const text = r.status === 403
-      ? 'This account or network isn’t allowed to open herdr-remote.'
+      ? 'This account or network isn’t allowed to open remote-for-herdr.'
       : 'Couldn’t reach your computer. Check that it’s awake and online.';
     app.replaceChildren(el('main', { class: 'view view-login' },
       el('div', { class: 'login' },
-        el('h1', { text: 'herdr-remote' }),
+        el('h1', { text: 'remote-for-herdr' }),
         el('p', { class: 'login-msg', role: 'alert', text }),
         el('button', { type: 'button', class: 'btn btn-primary btn-wide', text: 'Try again', onclick: boot }))));
   } else showLogin();

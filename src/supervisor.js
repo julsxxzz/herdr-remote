@@ -15,17 +15,17 @@ export const SERVER_NODE_FLAGS = Object.freeze([]);
 const CLI = fileURLToPath(new URL('./cli.js', import.meta.url));
 
 // The running server's pid (supervisor, or a standalone --foreground run), and the file
-// "herdr-remote stop" drops to ask it to stop.
+// "remote-for-herdr stop" drops to ask it to stop.
 // A request file (not a signal) because Windows cannot deliver a catchable signal to another process.
 export const pidFilePath = (home) => path.join(home, 'server.pid');
 const stopRequestPath = (home) => path.join(home, 'server.stop');
 const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
 
-const processAlive = (pid) => {
+export const processAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 };
 
-function readPid(file) {
+export function readPid(file) {
   try {
     const pid = Number(fs.readFileSync(file, 'utf8').trim());
     return Number.isInteger(pid) && pid > 0 ? pid : null;
@@ -107,10 +107,10 @@ export async function claimPidFile(home, {
   return { ok: true, release };
 }
 
-const staleHint = (home) => `If herdr-remote isn't actually running, delete ${path.resolve(pidFilePath(home))}`;
+const staleHint = (home) => `If remote-for-herdr isn't actually running, delete ${path.resolve(pidFilePath(home))}`;
 
 export const alreadyRunningMessage = (pid, home) =>
-  `herdr-remote is already running (pid ${pid}) — use "herdr-remote stop" first. `
+  `remote-for-herdr is already running (pid ${pid}) — use "remote-for-herdr stop" first. `
   + `${staleHint(home).replace(/^If/, 'if')}.`;
 
 const DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024;

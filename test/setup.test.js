@@ -193,7 +193,7 @@ test('runSetup: accepting serve and start-at-login runs them', async () => {
     [/tailscale serve/i, ['y']],
     [/start at login/i, ['y']],
   ]);
-  await runSetup({ isServerRunning: notRunning, home, prompt: s.prompt, exec, log: () => {}, installTask: async () => { installed++; } });
+  await runSetup({ isServerRunning: notRunning, home, prompt: s.prompt, exec, log: () => {}, installTask: async () => { installed++; }, waitUntilRunning: async () => true });
   assert.ok(calls.some((c) => c.join(' ') === 'tailscale serve --bg 4780'));
   assert.equal(installed, 1);
 });
@@ -260,7 +260,7 @@ test('R18: changing the PIN clears sessions; keeping it does not', async () => {
   assert.ok(verifyPin('newpin99', loadConfig(home).pinHash));
 });
 
-test('I3: setup refuses while herdr-remote answers on the configured port; nothing written', async () => {
+test('I3: setup refuses while remote-for-herdr answers on the configured port; nothing written', async () => {
   const home = tmp();
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ port: 4999 }));
   const before = fs.readFileSync(path.join(home, 'config.json'), 'utf8');
@@ -268,7 +268,7 @@ test('I3: setup refuses while herdr-remote answers on the configured port; nothi
   const { exec, calls } = stubExec();
   await assert.rejects(
     runSetup({ home, exec, log: () => {}, prompt: scripted([]).prompt, isServerRunning: async (port) => { probed.push(port); return true; } }),
-    { message: 'herdr-remote is running — stop it first: herdr-remote stop' },
+    { message: 'remote-for-herdr is running — stop it first: remote-for-herdr stop' },
   );
   assert.deepEqual(probed, [4999]);
   assert.equal(calls.length, 0);
@@ -284,4 +284,135 @@ test('portAnswers: true when something listens on 127.0.0.1:<port>, false otherw
   try { answered = await portAnswers(port, { timeoutMs: 1000 }); } finally { await new Promise((r) => srv.close(r)); }
   assert.equal(answered, true);
   assert.equal(await portAnswers(port, { timeoutMs: 1000 }), false);
+});
+
+const answers = (atLogin) => scripted([
+  [/allowed.*login/i, ['']],
+  [/^PIN/, ['hunter22']],
+  [/^Confirm PIN/, ['hunter22']],
+  [/tailscale serve/i, ['n']],
+  [/start at login/i, [atLogin]],
+]);
+// A global npm install layout in a temp dir: <prefix>\remote-for-herdr.cmd next to <prefix>\node_modules.
+function installLayout({ global }) {
+  const prefix = tmp();
+  const cli = path.join(prefix, 'node_modules', 'remote-for-herdr', 'src', 'cli.js');
+  fs.mkdirSync(path.dirname(cli), { recursive: true });
+  fs.writeFileSync(cli, '');
+  if (global) fs.writeFileSync(path.join(prefix, 'remote-for-herdr.cmd'), '');
+  return cli;
+}
+const GLOBAL_CLI = installLayout({ global: true });
+const LOCAL_CLI = installLayout({ global: false });
+const NPX_CLI = 'C:\\Users\\me\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\remote-for-herdr\\src\\cli.js';
+
+test('npm: accepting start-at-login runs the new task right away, then prints the phone URL and its QR code', async () => {
+  const home = tmp();
+  const { exec, calls } = stubExec();
+  const out = quiet();
+  const waited = [];
+  await runSetup({
+    isServerRunning: notRunning, home, prompt: answers('y').prompt, exec, log: out.log, cliPath: GLOBAL_CLI,
+    installTask: async () => {}, startDetached: () => assert.fail('the task is installed'),
+    waitUntilRunning: async (o) => { waited.push(o); return true; }, qr: (url) => `QR<${url}>`,
+  });
+  // /End first: a launcher in its restart pause would make Task Scheduler ignore the /Run.
+  assert.deepEqual(calls.filter((c) => c[0] === 'schtasks'), [['schtasks', '/End', '/TN', 'remote-for-herdr'], ['schtasks', '/Run', '/TN', 'remote-for-herdr']]);
+  assert.equal(waited.length, 1);
+  assert.equal(waited[0].home, home);
+  assert.equal(waited[0].port, 4780);
+  assert.equal(typeof waited[0].since, 'number'); // its server must have written server.pid after the /Run
+  assert.deepEqual(out.lines.slice(-3), [
+    'remote-for-herdr is running (start-at-login task).',
+    'Open on your phone: https://box.example.ts.net',
+    'QR<https://box.example.ts.net>',
+  ]);
+});
+
+test('npm: a task launcher that ignores the first /Run (still finishing) gets a second one', async () => {
+  const { exec, calls } = stubExec();
+  const out = quiet();
+  let n = 0;
+  await runSetup({
+    isServerRunning: notRunning, home: tmp(), prompt: answers('y').prompt, exec, log: out.log, cliPath: GLOBAL_CLI,
+    installTask: async () => {}, waitUntilRunning: async () => ++n === 2, qr: () => '',
+  });
+  assert.equal(calls.filter((c) => c[0] === 'schtasks' && c[1] === '/Run').length, 2);
+  assert.ok(out.lines.includes('remote-for-herdr is running (start-at-login task).'), out.lines.join('\n'));
+});
+
+test('npm: from the npx cache, no task is installed (global install hint) and the server is started detached', async () => {
+  const home = tmp();
+  const { exec, calls } = stubExec();
+  const out = quiet();
+  const detached = [];
+  const { installTask } = await import('../src/startup-task.js');
+  await runSetup({
+    isServerRunning: notRunning, home, prompt: answers('y').prompt, exec, log: out.log, cliPath: NPX_CLI,
+    installTask, startDetached: (o) => detached.push(o), waitUntilRunning: async () => true, qr: () => 'QR',
+  });
+  assert.equal(calls.filter((c) => c[0] === 'schtasks').length, 0); // the real installTask refused before schtasks
+  assert.ok(out.lines.some((l) => l.includes('npm i -g remote-for-herdr')), out.lines.join('\n'));
+  assert.deepEqual(detached, [{ home, cliPath: NPX_CLI }]);
+  assert.ok(out.lines.includes('remote-for-herdr is running.'));
+  assert.equal(out.lines.at(-1), 'QR');
+});
+
+test('npm: declining start-at-login prints the exact start command for how it was installed', async () => {
+  const cases = [
+    [GLOBAL_CLI, 'remote-for-herdr start'],
+    [NPX_CLI, 'npx remote-for-herdr start'],
+    [LOCAL_CLI, 'npx remote-for-herdr start'],
+    ['C:\\src\\rfh\\src\\cli.js', 'node "C:\\src\\rfh\\src\\cli.js" start'],
+  ];
+  for (const [cliPath, cmd] of cases) {
+    const { exec, calls } = stubExec();
+    const out = quiet();
+    await runSetup({
+      isServerRunning: notRunning, home: tmp(), prompt: answers('n').prompt, exec, log: out.log, cliPath,
+      installTask: async () => assert.fail('no'), startDetached: () => assert.fail('no'),
+      waitUntilRunning: async () => assert.fail('no'), qr: () => 'QR',
+    });
+    assert.equal(calls.filter((c) => c[0] === 'schtasks').length, 0);
+    assert.ok(out.lines.includes(`Start it with: ${cmd}`), out.lines.join('\n'));
+    assert.deepEqual(out.lines.slice(-2), ['Open on your phone: https://box.example.ts.net', 'QR']);
+  }
+});
+
+test('npm: a server that does not come up is reported with the log path and the start command', async () => {
+  const home = tmp();
+  const { exec } = stubExec();
+  const out = quiet();
+  await runSetup({
+    isServerRunning: notRunning, home, prompt: answers('y').prompt, exec, log: out.log, cliPath: GLOBAL_CLI,
+    installTask: async () => {}, waitUntilRunning: async () => false, qr: () => '',
+  });
+  assert.ok(out.lines.some((l) => l.startsWith('remote-for-herdr did not start:')
+    && l.includes(path.join(home, 'logs', 'server.log')) && l.endsWith('remote-for-herdr start')), out.lines.join('\n'));
+});
+
+test('owner decision: start-at-login defaults to yes (empty answer installs and starts it)', async () => {
+  const { exec } = stubExec();
+  let installed = 0;
+  let asked = '';
+  const base = answers('');
+  const prompt = async (q) => { if (/start at login/i.test(q)) asked = q; return base.prompt(q); };
+  await runSetup({
+    isServerRunning: notRunning, home: tmp(), prompt, exec, log: () => {}, cliPath: GLOBAL_CLI,
+    installTask: async () => { installed++; }, waitUntilRunning: async () => true, qr: () => '',
+  });
+  assert.match(asked, /\[Y\/n\] $/);
+  assert.equal(installed, 1);
+});
+
+test('fix: a detached start waits for the pid it started (not just any program on the port)', async () => {
+  const { exec } = stubExec();
+  const waited = [];
+  const { installTask } = await import('../src/startup-task.js');
+  await runSetup({
+    isServerRunning: notRunning, home: tmp(), prompt: answers('y').prompt, exec, log: () => {}, cliPath: NPX_CLI,
+    installTask, startDetached: () => ({ pid: 4321 }), waitUntilRunning: async (o) => { waited.push(o); return true; }, qr: () => '',
+  });
+  assert.equal(waited.length, 1);
+  assert.equal(waited[0].pid, 4321);
 });
