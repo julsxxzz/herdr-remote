@@ -41,7 +41,9 @@ export function openTermView({ root, address, item }) {
   let attempt = 0;
   let reconnectTimer = null;
   let zoom = readZoomPref(storage()); // { mode: 'fit' | 'manual', zoom }
-  let scale = 1; // scale applied to the terminal by the last layout()
+  // Scale applied by the last layout(); before the first one only a manual zoom is known.
+  let scale = zoom.mode === 'manual' ? zoom.zoom : 1;
+  let laidOut = false;
   let resetOnSize = true;
 
   // ---- header ----
@@ -104,7 +106,9 @@ export function openTermView({ root, address, item }) {
 
   function renderZoom() {
     fitBtn.textContent = zoomLabel(zoom);
-    fitBtn.setAttribute('aria-label', zoomAriaLabel(zoom, scale));
+    // Fit's scale is unknown until the terminal is laid out: don't announce a made-up 100%.
+    const known = laidOut || zoom.mode === 'manual';
+    fitBtn.setAttribute('aria-label', known ? zoomAriaLabel(zoom, scale) : 'Fit to width');
     zoomOutBtn.disabled = scale <= MIN_ZOOM;
     zoomInBtn.disabled = scale >= MAX_ZOOM;
   }
@@ -120,6 +124,9 @@ export function openTermView({ root, address, item }) {
       host.style.transform = `scale(${scale})`;
       wrap.style.width = `${width}px`;
       wrap.style.height = `${Math.ceil(size.h * scale)}px`;
+      laidOut = true;
+    } else if (zoom.mode === 'manual') {
+      scale = zoom.zoom; // not laid out yet, but a manual zoom is still known
     }
     renderZoom();
   }
@@ -180,9 +187,11 @@ export function openTermView({ root, address, item }) {
       const prev = pinch.last;
       pinch.last = pinch.next;
       pinch.next = null;
-      // Incremental and from the live scroll offsets, so a native pan the browser made
-      // meanwhile (non-cancelable touches) adds to the zoom instead of being overwritten.
-      const step = pinchStep({ scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, prev, next: pinch.last });
+      // Incremental and from the live scroll offsets. When the touchmove wasn't cancelable the
+      // browser has already panned by the midpoint's movement: zoom about the current midpoint only.
+      const step = pinchStep({
+        scale, scrollLeft: area.scrollLeft, scrollTop: area.scrollTop, prev, next: pinch.last, native: pinch.native,
+      });
       zoom = { mode: 'manual', zoom: step.scale };
       layout();
       area.scrollLeft = step.scrollLeft;
@@ -220,7 +229,7 @@ export function openTermView({ root, address, item }) {
   function startPinch(list) {
     flushFrame();
     const [a, b] = list;
-    pinch = { ids: [a.identifier, b.identifier], last: measure(a, b), next: null };
+    pinch = { ids: [a.identifier, b.identifier], last: measure(a, b), next: null, native: false };
   }
   function endPinch() {
     flushFrame();
@@ -239,6 +248,7 @@ export function openTermView({ root, address, item }) {
     const pair = pinchPair(ev.touches);
     if (!pair) return;
     if (ev.cancelable) ev.preventDefault();
+    pinch.native = !ev.cancelable; // the browser owns the pan for this move
     pinch.next = measure(...pair);
     scheduleFrame();
   }, { passive: false });
@@ -453,6 +463,7 @@ export function openTermView({ root, address, item }) {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('touchend', onTouchEnd);
       window.removeEventListener('touchcancel', onTouchEnd);
+      if (pinch) endPinch(); // flushes and saves a pinch still in progress
       if (saveTimer) { clearTimeout(saveTimer); flushFrame(); saveZoom(); }
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();

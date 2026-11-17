@@ -197,6 +197,35 @@ test('pinchStep: a native scroll between frames is kept, not overwritten', () =>
   near(d.scrollLeft - c.scrollLeft, 60); // the delta scales with the zoom
 });
 
+test('pinchStep native: the browser owns the pan, so a pure two-finger translation leaves our scroll alone', () => {
+  const st = pinchStep({
+    scale: 1, scrollLeft: 230, scrollTop: 110, native: true, // browser already scrolled for the move
+    prev: { dist: 100, x: 150, y: 150 }, next: { dist: 100, x: 180, y: 160 },
+  });
+  assert.equal(st.scale, 1);
+  near(st.scrollLeft, 230);
+  near(st.scrollTop, 110);
+});
+
+test('pinchStep native: a spread zooms about the CURRENT midpoint with no translation of ours', () => {
+  const live = { scale: 1, scrollLeft: 230, scrollTop: 110 };
+  const next = { dist: 200, x: 180, y: 160 };
+  const st = pinchStep({ ...live, native: true, prev: { dist: 100, x: 150, y: 150 }, next });
+  near(st.scale, 2);
+  const [bx, by] = contentAt(live, next.x, next.y);
+  const [ax, ay] = contentAt(st, next.x, next.y);
+  near(ax, bx);
+  near(ay, by);
+});
+
+test('pinchStep non-native (default) still follows the midpoint from prev to next', () => {
+  const args = { scale: 1, scrollLeft: 200, scrollTop: 100, prev: { dist: 100, x: 150, y: 150 }, next: { dist: 100, x: 180, y: 160 } };
+  const st = pinchStep(args);
+  near(st.scrollLeft, 170);
+  near(st.scrollTop, 90);
+  assert.deepEqual(pinchStep({ ...args, native: false }), st);
+});
+
 test('pinchStep: a degenerate distance leaves the scale alone', () => {
   const st = pinchStep({ scale: 0.8, scrollLeft: 10, scrollTop: 10, prev: { dist: 0, x: 0, y: 0 }, next: { dist: 50, x: 0, y: 0 } });
   assert.equal(st.scale, 0.8);

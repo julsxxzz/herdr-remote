@@ -56,11 +56,15 @@ export function anchoredScroll({ fromScale, toScale, scrollLeft, scrollTop, from
 // distance and the anchor is the previous → current midpoint, applied to the LIVE scroll
 // offsets, so a native scroll the browser did between frames combines with the zoom.
 // prev/next: { dist, x, y } with x, y relative to the scroll container.
-export function pinchStep({ scale, scrollLeft, scrollTop, prev, next }) {
+// native: the touchmove couldn't be cancelled, so the browser already panned by the
+// midpoint's movement; then we only zoom about the current midpoint (no translation of
+// our own, or the movement would count twice).
+export function pinchStep({ scale, scrollLeft, scrollTop, prev, next, native = false }) {
   const toScale = pinchScale(scale, prev.dist, next.dist);
+  const from = native ? next : prev;
   return {
     scale: toScale,
-    ...anchoredScroll({ fromScale: scale, toScale, scrollLeft, scrollTop, fromX: prev.x, fromY: prev.y, toX: next.x, toY: next.y }),
+    ...anchoredScroll({ fromScale: scale, toScale, scrollLeft, scrollTop, fromX: from.x, fromY: from.y, toX: next.x, toY: next.y }),
   };
 }
 
