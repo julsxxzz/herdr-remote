@@ -163,11 +163,15 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
       try { address = decodeURIComponent(m[1]); } catch { return sendJson(res, 404, { error: 'not_found' }); }
       if (!isValidAddress(address)) return sendJson(res, 404, { error: 'not_found' });
       if (m[2] === 'send') {
-        const { text } = body;
+        const { text, force = false } = body;
         if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT) {
           return sendJson(res, 400, { error: 'bad_text' });
         }
-        return sendToTerminal(res, address, () => hc.send(address, text));
+        if (!isBool(force)) return sendJson(res, 400, { error: 'bad_force' });
+        // --force only types into an open dialog (e.g. its "Type something" option); it is
+        // honoured only while the terminal is blocked, otherwise this is a normal send.
+        const forced = force && store.get(address)?.status === 'blocked';
+        return sendToTerminal(res, address, () => hc.send(address, text, { force: forced }));
       }
       const { keys } = body;
       if (!Array.isArray(keys) || keys.length < 1 || keys.length > MAX_KEYS || !keys.every(isValidKeyName)) {

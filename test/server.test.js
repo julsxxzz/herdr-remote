@@ -221,6 +221,50 @@ test('terminals list and send', async () => {
   assert.deepEqual(bad.data, { error: 'showing a dialog' });
 });
 
+const setStatus = (st) => store.reset({
+  seq: 2,
+  terminals: [{
+    address: 't1', state: 'live', status: { app: 'claude-code', state: st }, turn: 1,
+    cols: 80, rows: 24, labels: { where: 'demo / 1' }, foreground: { name: 'claude' }, argv: [], cwd: 'C:\work\demo',
+  }],
+}, { emitTransitions: false });
+
+test('force send: --force only while the terminal is blocked', async () => {
+  const cookie = await login();
+  setStatus('blocked');
+  assert.equal(store.get('t1').status, 'blocked');
+  assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'green please', force: true } })).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--force', '--', 'green please']);
+  // without force a blocked terminal still gets a plain send (hc decides)
+  assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi' } })).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--', 'hi']);
+  assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force: false } })).status, 204);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--', 'hi']);
+
+  for (const st of ['working', 'done', 'idle']) {
+    setStatus(st);
+    assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: `x-${st}`, force: true } })).status, 204);
+    assert.deepEqual(calls().at(-1), ['send', 't1', '--', `x-${st}`]);
+  }
+});
+
+test('force send: non-boolean force is 400 and nothing is sent; unknown terminal still 404', async () => {
+  const cookie = await login();
+  setStatus('blocked');
+  for (const force of ['true', 1, null, {}]) {
+    const r = await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force } });
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.data, { error: 'bad_force' });
+  }
+  assert.deepEqual(calls(), []);
+  assert.equal((await req('POST', '/api/terminals/t9/send', { cookie, body: { text: 'hi', force: true } })).status, 404);
+  fs.writeFileSync(path.join(dir, 'exit'), '1');
+  fs.writeFileSync(path.join(dir, 'stderr'), 'nope');
+  const bad = await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'hi', force: true } });
+  assert.equal(bad.status, 409);
+  assert.deepEqual(bad.data, { error: 'nope' });
+});
+
 test('keys validation', async () => {
   const cookie = await login();
   assert.equal((await req('POST', '/api/terminals/t1/keys', { cookie, body: { keys: ['ctrl+c'] } })).status, 204);

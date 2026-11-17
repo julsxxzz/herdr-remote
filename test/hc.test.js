@@ -39,6 +39,15 @@ test('send passes text verbatim after --', async () => {
   assert.deepEqual(calls().at(-1), ['send', 't3', '--', text]);
 });
 
+test('send with force puts --force before --; default and force:false are unchanged', async () => {
+  assert.deepEqual(await hc.send('t3', 'green please', { force: true }), { ok: true });
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--force', '--', 'green please']);
+  await hc.send('t3', 'hi', { force: false });
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', 'hi']);
+  await hc.send('t3', 'hi', {});
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', 'hi']);
+});
+
 test('send failure uses JSON stderr message', async () => {
   put('exit', '1');
   put('stderr', '{"error":{"kind":"blocked","message":"it is showing a dialog"}}');

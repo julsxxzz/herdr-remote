@@ -89,10 +89,11 @@ export function createHc({
       assertAddress(address);
       return runJson(['get', address, '--json']);
     },
-    async send(address, text) {
+    // force: also type while the terminal shows a dialog (hc refuses that by default).
+    async send(address, text, { force = false } = {}) {
       assertAddress(address);
       if (typeof text !== 'string') throw new TypeError('text must be a string');
-      return runAction(['send', address, '--', text]);
+      return runAction(['send', address, ...(force === true ? ['--force'] : []), '--', text]);
     },
     async keys(address, names) {
       assertAddress(address);
