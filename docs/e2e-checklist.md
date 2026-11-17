@@ -16,6 +16,8 @@ Owner checks that cannot be automated. Record results in the "Tested" line of th
 - [ ] Set a zoom, reload the page (or close and reopen the app): the same zoom is back.
 - [ ] In a session with long output, drag down with one finger: it scrolls past the screen into older output (history), and a flick keeps it gliding and slowing down.
 - [ ] While scrolled up, new output arrives without pulling the view down; `↓ Latest` shows at the bottom right and tapping it jumps to the newest output (the button then hides).
+- [ ] While scrolled up or while a flick is still gliding, the key bar, the reply box and `↓ Latest` still take taps; touching the terminal stops a flick.
+- [ ] After scrolling into history, start a drag on the far right edge of the terminal (where the thin scrollbar shows): it scrolls once with your finger, no jump.
 - [ ] Pull down hard at the very top of the history, and on the session list: the page never reloads (no pull-to-refresh).
 - [ ] `node src/cli.js install-task`, then reboot or log off and on: the server is running. Then `uninstall-task` removes it.
 - [ ] The PIN prompt in `npm run setup` hides the typed characters in a real terminal.

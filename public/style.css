@@ -259,6 +259,10 @@ button, input, textarea { font: inherit; color: inherit; }
 .term-wrap { overflow: hidden; }
 .term-host { width: max-content; transform-origin: 0 0; }
 .term-host .xterm { padding: 4px; }
+/* xterm's scrollbar stays a position indicator only: dragging it (pointer events) would
+   scroll a second time alongside our own touch pan. Track and slider both. */
+.term-host .xterm .xterm-scrollable-element > .scrollbar,
+.term-host .xterm .xterm-scrollable-element > .scrollbar > .slider { pointer-events: none; }
 
 .controls {
   flex: none; display: flex; flex-direction: column; gap: 8px;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitPan, releaseVelocity, flingStep, FLING_DECAY, FLING_STOP, FRAME_MS, MAX_VELOCITY } from '../public/scroll.js';
+import { splitPan, releaseVelocity, flingStep, FLING_DECAY, FLING_STOP, FRAME_MS, MAX_VELOCITY, snapCarry } from '../public/scroll.js';
 
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} !~ ${b}`);
 const base = { maxScrollTop: 200, linesAbove: 50, linesBelow: 0, lineHeight: 20, carry: 0 };
@@ -76,6 +76,28 @@ test('releaseVelocity uses only the last ~100 ms of moves', () => {
   assert.deepEqual(releaseVelocity(samples.slice(0, 1), 1000), { vx: 0, vy: 0 });
   assert.deepEqual(releaseVelocity(samples, 1300), { vx: 0, vy: 0 }); // finger held still before lifting
   assert.deepEqual(releaseVelocity([], 0), { vx: 0, vy: 0 });
+});
+
+test('snapCarry keeps the sub-pixel the browser dropped when it snapped scrollTop', () => {
+  near(snapCarry(10.3, 10), 0.3);
+  near(snapCarry(10.3, 10.8), -0.5);
+  assert.equal(snapCarry(12, 12), 0);
+  assert.equal(snapCarry(50, 40), 0); // a real difference (clamped, or moved elsewhere): no carry
+  assert.equal(snapCarry(NaN, 3), 0);
+});
+
+test('a very slow drag still moves once the carried sub-pixels add up', () => {
+  // A browser that only lands on whole px (floors), and a drag of 0.3 px per event.
+  let actual = 100;
+  let carry = 0;
+  for (let i = 0; i < 10; i++) {
+    const r = splitPan({ ...base, delta: 0.3, scrollTop: actual + carry, linesBelow: 0 });
+    const desired = r.scrollTop;
+    actual = Math.floor(desired);
+    carry = snapCarry(desired, actual);
+  }
+  near(actual + carry, 103); // without the carry it would still sit at 100
+  assert.ok(actual >= 102, `${actual}`); // it really moved, the remainder is carried
 });
 
 test('releaseVelocity is capped, so bursty events cannot launch a runaway fling', () => {

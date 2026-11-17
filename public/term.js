@@ -7,7 +7,7 @@ import {
   MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel, zoomAriaLabel,
   pinchStep, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
 } from './zoom.js';
-import { splitPan, releaseVelocity, flingStep, FRAME_MS, FLING_STOP, VELOCITY_WINDOW_MS } from './scroll.js';
+import { splitPan, snapCarry, releaseVelocity, flingStep, FRAME_MS, FLING_STOP, VELOCITY_WINDOW_MS } from './scroll.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
@@ -155,6 +155,7 @@ export function openTermView({ root, address, item }) {
   }
 
   function commitZoom(next) {
+    stopFling(); // + / − / Fit taps stop a running fling
     applyZoom(next);
     saveZoom();
   }
@@ -203,6 +204,9 @@ export function openTermView({ root, address, item }) {
 
   // ---- scrolling: one range, xterm scrollback above + the area's own scroll below ----
   let lineCarry = 0; // fractional scrollback px not yet worth a whole line
+  let topCarry = 0; // sub-pixel of the area's own scroll lost to scroll snapping
+  let leftCarry = 0;
+  function resetCarries() { lineCarry = 0; topCarry = 0; leftCarry = 0; }
   function rowHeightPx() { // one terminal row in screen px at the current zoom
     const screen = term?.element?.querySelector('.xterm-screen');
     return screen && term.rows ? (screen.offsetHeight / term.rows) * scale : 0;
@@ -213,18 +217,22 @@ export function openTermView({ root, address, item }) {
     let moved = false;
     if (dx) {
       const before = area.scrollLeft;
-      area.scrollLeft = before + dx;
-      moved = area.scrollLeft !== before;
+      const max = area.scrollWidth - area.clientWidth;
+      const desired = Math.min(max, Math.max(0, before + leftCarry + dx));
+      area.scrollLeft = desired;
+      leftCarry = snapCarry(desired, area.scrollLeft);
+      moved = desired !== before;
     }
     if (dy) {
       const buf = term?.buffer.active;
       const r = splitPan({
-        delta: dy, scrollTop: area.scrollTop, maxScrollTop: area.scrollHeight - area.clientHeight,
+        delta: dy, scrollTop: area.scrollTop + topCarry, maxScrollTop: area.scrollHeight - area.clientHeight,
         linesAbove: buf ? buf.viewportY : 0, linesBelow: buf ? buf.baseY - buf.viewportY : 0,
         lineHeight: rowHeightPx(), carry: lineCarry,
       });
       lineCarry = r.carry;
       area.scrollTop = r.scrollTop;
+      topCarry = snapCarry(r.scrollTop, area.scrollTop); // the sub-pixel Chrome's snapping dropped
       if (r.lines) term.scrollLines(r.lines); // scrolling up keeps xterm from following new output
       moved = moved || Math.abs(r.rest) < Math.abs(dy);
     }
@@ -373,7 +381,7 @@ export function openTermView({ root, address, item }) {
   }
   latestBtn.addEventListener('click', () => {
     stopFling();
-    lineCarry = 0;
+    resetCarries();
     term?.scrollToBottom();
     area.scrollTop = area.scrollHeight;
     updateLatest();
@@ -400,7 +408,7 @@ export function openTermView({ root, address, item }) {
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
     }
     resetOnSize = false;
-    lineCarry = 0;
+    resetCarries();
     layout();
     updateLatest();
   }

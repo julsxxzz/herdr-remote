@@ -62,6 +62,14 @@ export function splitPan({ delta, scrollTop, maxScrollTop, linesAbove, linesBelo
   return { scrollTop: top, lines, carry: c, rest: rem };
 }
 
+// Browsers snap scrollTop/scrollLeft to device pixels, so a very slow drag (a fraction of a
+// px per event) would never move. Carry what was dropped into the next pan; a difference of
+// a pixel or more is real (clamped at an end, or scrolled by something else) and is not carried.
+export function snapCarry(desired, actual) {
+  const d = desired - actual;
+  return Number.isFinite(d) && Math.abs(d) < 1 ? d : 0;
+}
+
 // Finger velocity (px/ms) over the last VELOCITY_WINDOW_MS of samples [{ t, x, y }].
 // Zero if the finger stopped moving before it lifted.
 export function releaseVelocity(samples, now, windowMs = VELOCITY_WINDOW_MS) {
