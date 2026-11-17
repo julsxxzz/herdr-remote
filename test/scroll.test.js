@@ -1,0 +1,97 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { splitPan, releaseVelocity, flingStep, FLING_DECAY, FLING_STOP, FRAME_MS, MAX_VELOCITY } from '../public/scroll.js';
+
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} !~ ${b}`);
+const base = { maxScrollTop: 200, linesAbove: 50, linesBelow: 0, lineHeight: 20, carry: 0 };
+
+test('splitPan: moves inside the area first', () => {
+  assert.deepEqual(splitPan({ ...base, delta: -40, scrollTop: 100 }), { scrollTop: 60, lines: 0, carry: 0, rest: 0 });
+  assert.deepEqual(splitPan({ ...base, delta: 40, scrollTop: 100 }), { scrollTop: 140, lines: 0, carry: 0, rest: 0 });
+});
+
+test('splitPan: scrolling up past the area top continues into scrollback with a fractional carry', () => {
+  const r = splitPan({ ...base, delta: -100, scrollTop: 30 });
+  assert.equal(r.scrollTop, 0);
+  assert.equal(r.lines, -3);
+  near(r.carry, -10);
+  assert.equal(r.rest, 0);
+  const r2 = splitPan({ ...base, delta: -15, scrollTop: 0, carry: r.carry });
+  assert.equal(r2.lines, -1);
+  near(r2.carry, -5);
+});
+
+test('splitPan: scrolling down leaves the scrollback first, then moves the area (no dead zone)', () => {
+  const r = splitPan({ ...base, delta: 70, scrollTop: 0, linesAbove: 48, linesBelow: 2 });
+  assert.equal(r.lines, 2);
+  assert.equal(r.scrollTop, 30);
+  assert.equal(r.carry, 0);
+});
+
+test('splitPan: small moves accumulate into whole lines', () => {
+  let carry = 0;
+  let lines = 0;
+  for (let i = 0; i < 10; i++) {
+    const r = splitPan({ ...base, delta: -7, scrollTop: 0, carry });
+    carry = r.carry;
+    lines += r.lines;
+  }
+  assert.equal(lines, -3); // 70 px = 3 lines + 10 px carried
+  near(carry, -10);
+});
+
+test('splitPan: a round trip comes back to the same place', () => {
+  const up = splitPan({ ...base, delta: -150, scrollTop: 50, linesAbove: 10, linesBelow: 0 });
+  assert.deepEqual(up, { scrollTop: 0, lines: -5, carry: 0, rest: 0 });
+  const down = splitPan({ ...base, delta: 150, scrollTop: up.scrollTop, linesAbove: 5, linesBelow: 5, carry: up.carry });
+  assert.equal(down.lines, 5);
+  assert.equal(down.scrollTop, 50);
+});
+
+test('splitPan: edges report the unused rest', () => {
+  const top = splitPan({ ...base, delta: -100, scrollTop: 0, linesAbove: 2 });
+  assert.equal(top.lines, -2);
+  near(top.rest, -60);
+  assert.equal(top.carry, 0);
+  const bottom = splitPan({ ...base, delta: 80, scrollTop: 170, linesBelow: 0 });
+  assert.equal(bottom.scrollTop, 200);
+  near(bottom.rest, 50);
+  const none = splitPan({ ...base, delta: -10, scrollTop: 0, linesAbove: 0 });
+  assert.deepEqual(none, { scrollTop: 0, lines: 0, carry: 0, rest: -10 });
+  const noLines = splitPan({ ...base, delta: -10, scrollTop: 0, lineHeight: 0 });
+  assert.equal(noLines.lines, 0);
+  assert.equal(noLines.rest, -10);
+});
+
+test('releaseVelocity uses only the last ~100 ms of moves', () => {
+  const samples = [
+    { t: 0, x: 0, y: 0 }, // too old
+    { t: 900, x: 0, y: 500 },
+    { t: 950, x: 10, y: 450 },
+    { t: 1000, x: 20, y: 400 },
+  ];
+  const v = releaseVelocity(samples, 1000);
+  near(v.vx, 0.2);
+  near(v.vy, -1);
+  assert.deepEqual(releaseVelocity(samples.slice(0, 1), 1000), { vx: 0, vy: 0 });
+  assert.deepEqual(releaseVelocity(samples, 1300), { vx: 0, vy: 0 }); // finger held still before lifting
+  assert.deepEqual(releaseVelocity([], 0), { vx: 0, vy: 0 });
+});
+
+test('releaseVelocity is capped, so bursty events cannot launch a runaway fling', () => {
+  const v = releaseVelocity([{ t: 1000, x: 0, y: 0 }, { t: 1000.5, x: -300, y: 200 }], 1000.5);
+  near(v.vx, -MAX_VELOCITY);
+  near(v.vy, MAX_VELOCITY);
+});
+
+test('flingStep decays and stops under the threshold', () => {
+  near(flingStep(10), 10 * FLING_DECAY);
+  near(flingStep(-10), -10 * FLING_DECAY);
+  near(flingStep(10, FRAME_MS * 2), 10 * FLING_DECAY ** 2); // a late frame decays more
+  assert.equal(flingStep(FLING_STOP), 0);
+  assert.equal(flingStep(0), 0);
+  let v = 40;
+  let frames = 0;
+  while (v) { v = flingStep(v); frames++; }
+  assert.ok(frames > 10 && frames < 200, `${frames} frames`);
+});
