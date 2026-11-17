@@ -269,7 +269,7 @@ test('B2: a standalone start --foreground owns server.pid and honours "stop"', a
   }
 });
 
-test('lighter: the start-at-login command line (memory flags, --foreground --log) runs, logs to the file and honours "stop"', async () => {
+test('lighter: the start-at-login command line (--foreground --log) runs, logs to the file and honours "stop"', async () => {
   const home = foregroundHome();
   const child = spawn(process.execPath, [...SERVER_NODE_FLAGS, CLI, 'start', '--foreground', '--log', '--home', home], { windowsHide: true });
   let printed = '';

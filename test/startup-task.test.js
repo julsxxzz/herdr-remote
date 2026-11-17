@@ -13,21 +13,32 @@ test('taskCommands: argv arrays and vbs content', () => {
   const flags = SERVER_NODE_FLAGS.map((f) => `${f} `).join('');
   assert.equal(t.vbs, [
     'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'stopFile = "C:\\h\\server.stop"',
     'pause = 1',
     'Do',
     '  started = Now',
+    '  On Error Resume Next',
     `  rc = sh.Run("""C:\\node\\node.exe"" ${flags}""C:\\app\\src\\cli.js"" start --foreground --log --home ""C:\\h""", 0, True)`,
+    '  If Err.Number <> 0 Then WScript.Quit 1',
+    '  On Error GoTo 0',
     '  If rc = 0 Or rc = 78 Then WScript.Quit 0',
     '  If DateDiff("s", started, Now) >= 60 Then pause = 1',
     '  WScript.Sleep pause * 1000',
     '  pause = pause * 2',
     '  If pause > 30 Then pause = 30',
+    '  If fso.FileExists(stopFile) Then',
+    '    On Error Resume Next',
+    '    fso.DeleteFile stopFile',
+    '    WScript.Quit 0',
+    '  End If',
     'Loop',
     '',
   ].join('\r\n'));
   assert.equal(t.vbsPath, 'C:\\h\\start-hidden.vbs');
   assert.equal(t.xmlPath, 'C:\\h\\herdr-remote-task.xml');
   assert.deepEqual(t.create, ['schtasks', '/Create', '/F', '/TN', 'herdr-remote', '/XML', 'C:\\h\\herdr-remote-task.xml']);
+  assert.deepEqual(t.end, ['schtasks', '/End', '/TN', 'herdr-remote']);
   assert.deepEqual(t.remove, ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
   assert.equal(t.xml, taskXml({ home: 'C:\\h', userId: USER }));
 });
@@ -64,7 +75,17 @@ test('lighter: the launcher waits for the server and runs it again after a crash
   assert.ok(at(quit) < at(sleep) && at(sleep) < at('Loop'), vbs);
   assert.ok(at('If pause > 30 Then pause = 30') > at(sleep)); // backoff 1, 2, 4 ... 30 s
   assert.ok(at('If DateDiff("s", started, Now) >= 60 Then pause = 1') > run); // back to 1 s after a minute-long run
-  assert.deepEqual(lines.filter((l) => l.includes('WScript.Quit')), [quit]); // nothing else ends it
+  // A node that cannot be started (moved, upgraded) ends it with 1 instead of a modal WSH error box.
+  assert.equal(lines[run - 1], 'On Error Resume Next');
+  assert.equal(lines[run + 1], 'If Err.Number <> 0 Then WScript.Quit 1');
+  assert.equal(lines[run + 2], 'On Error GoTo 0');
+  // A "herdr-remote stop" during the pause (server.stop) is honoured before the next run.
+  assert.ok(lines.includes('stopFile = "C:\\h\\server.stop"'));
+  const check = at('If fso.FileExists(stopFile) Then');
+  assert.ok(check > at(sleep) && check < at('Loop'), vbs);
+  assert.deepEqual(lines.slice(check + 1, check + 5), ['On Error Resume Next', 'fso.DeleteFile stopFile', 'WScript.Quit 0', 'End If']);
+  // Nothing else ends it.
+  assert.deepEqual(lines.filter((l) => l.includes('WScript.Quit')), ['If Err.Number <> 0 Then WScript.Quit 1', quit, 'WScript.Quit 0']);
   assert.equal(lines.at(-2), 'Loop');
 });
 
@@ -125,5 +146,22 @@ test('B24: installTask writes the vbs and a UTF-16LE (BOM) xml, then runs schtas
   await uninstallTask({ home, cliPath: 'C:\\a\\cli.js', exec });
   assert.deepEqual(calls.at(-1), ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
   assert.equal(fs.existsSync(xmlPath), false);
+  assert.equal(fs.existsSync(path.join(home, 'start-hidden.vbs')), false);
+});
+
+test('lighter: uninstallTask ends the running launcher (/End, exit code ignored) before deleting the task', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hr-task-'));
+  const calls = [];
+  // /End fails when the task is not running: that must not stop the delete or the cleanup.
+  const exec = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    return args[0] === '/End' ? { code: 1, stdout: '', stderr: 'not running' } : { code: 0, stdout: '', stderr: '' };
+  };
+  fs.writeFileSync(path.join(home, 'start-hidden.vbs'), 'x');
+  await uninstallTask({ home, cliPath: 'C:\a\cli.js', exec });
+  assert.deepEqual(calls, [
+    ['schtasks', '/End', '/TN', 'herdr-remote'],
+    ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote'],
+  ]);
   assert.equal(fs.existsSync(path.join(home, 'start-hidden.vbs')), false);
 });

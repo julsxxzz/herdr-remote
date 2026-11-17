@@ -31,7 +31,9 @@ Owner checks that cannot be automated. Record results in the "Tested" line of th
 - [ ] Pinch at the bottom edge of the terminal with one finger landing on the key bar: no key is sent and no zoom jump happens.
 - [ ] Key bar shows `1 2 3 4 ↑ ↓` / `Enter Tab ⇧Tab ← → Esc`; a successful key shows a brief ✓, a successful reply shows `Sent ✓`; in landscape the keys are one row.
 - [ ] `node src/cli.js install-task`, then reboot or log off and on: the server is running. Then `uninstall-task` removes it.
-- [ ] After `install-task` and a log on: Task Manager shows one `node` for herdr-remote (no supervisor), plus `hc` and the hidden `wscript.exe` launcher. End that `node` task: within a few seconds it is back (the phone reconnects, a new `starting (pid …)` line is in `<home>\logs\server.log`). End it twice more: it still comes back (after 2 s, then 4 s).
-- [ ] With the task running, `node src/cli.js stop` prints `stopped`, the server is gone and stays gone (no restart a minute later).
+- [ ] After `install-task` and a log on: Task Manager shows one `node` for herdr-remote (no supervisor), plus `hc` and the hidden `wscript.exe` launcher. End that `node` task: within a few seconds it is back (the phone reconnects, a new `starting (pid …)` line is in `<home>\logs\server.log`). End it twice more, each time within a minute of it coming back (kill again within a minute): it still comes back, after 2 s, then 4 s.
+- [ ] With the task running, `node src/cli.js stop` prints `stopped`, the server is gone and stays gone (no restart a minute later), and no `wscript.exe` is left.
+- [ ] With the task running, end the `node` task and run `node src/cli.js stop` within a second (it prints `not running`): the server does not come back, no `wscript.exe` is left and `<home>server.stop` is gone.
+- [ ] With the task running, `node src/cli.js uninstall-task`: no `wscript.exe` left; `node` keeps running until `node src/cli.js stop`.
 - [ ] The PIN prompt in `npm run setup` hides the typed characters in a real terminal.
 - [ ] Does Herdr ever report `blocked` for a Claude Code permission prompt? (Design spec section 7, risk 2. If never, a permission dialog mid-turn stays "working" and needs a fallback.)

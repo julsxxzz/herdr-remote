@@ -261,13 +261,20 @@ export function superviseServer({
 
 // Asks the server recorded in <home>/server.pid to stop, and waits for it (never kills it).
 // Resolves 'stopped', 'not running' (no or stale pid file) or 'timeout — <pid> did not stop'.
+// When nothing runs, the request is still left in <home>/server.stop: the start-at-login launcher
+// may be waiting to run a crashed server again, and it checks that file first (then quits). A
+// server that starts later clears it at claim (claimPidFile), so it never stops a later run.
 export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive = processAlive }) {
   const pidFile = pidFilePath(home);
+  const notRunning = () => {
+    try { fs.writeFileSync(stopRequestPath(home), 'stop'); } catch { /* no home: nothing to tell */ }
+    return 'not running';
+  };
   let pid;
-  try { pid = Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { return 'not running'; }
+  try { pid = Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { return notRunning(); }
   if (!Number.isInteger(pid) || pid <= 0 || !isAlive(pid)) {
     rmQuiet(pidFile);
-    return 'not running';
+    return notRunning();
   }
   fs.writeFileSync(stopRequestPath(home), 'stop');
   const end = Date.now() + waitMs;

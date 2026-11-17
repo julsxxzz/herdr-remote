@@ -113,6 +113,30 @@ test('I3: stopRunning reports "not running" without a pid file, and removes a st
   assert.equal(fs.existsSync(pidFilePath(home)), false);
 });
 
+test('lighter: stopRunning leaves a stop request when nothing runs (for a launcher waiting to restart), and a later start clears it', async () => {
+  const home = tmp();
+  const stopFile = path.join(home, 'server.stop');
+  assert.equal(await stopRunning({ home }), 'not running');
+  assert.equal(fs.existsSync(stopFile), true);
+  fs.rmSync(stopFile);
+  fs.writeFileSync(pidFilePath(home), '424242');
+  assert.equal(await stopRunning({ home, isAlive: () => false }), 'not running');
+  assert.equal(fs.existsSync(stopFile), true);
+  // A server that starts afterwards claims the pid file and drops the leftover request: it keeps running.
+  let stopped = false;
+  const claim = await claimPidFile(home, { onStopRequest: () => { stopped = true; }, pollMs: 20, portAnswers: async () => false });
+  try {
+    assert.equal(claim.ok, true);
+    assert.equal(fs.existsSync(stopFile), false);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(stopped, false);
+  } finally {
+    claim.release();
+  }
+  // No home at all: still just "not running".
+  assert.equal(await stopRunning({ home: path.join(home, 'missing') }), 'not running');
+});
+
 test('I3: pid file is removed when the supervisor finishes on its own', async () => {
   const home = tmp();
   const script = path.join(home, 'ok.mjs');
