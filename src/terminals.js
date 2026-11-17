@@ -13,13 +13,13 @@ export function displayAgent(t) {
 }
 
 function toProgress(p) {
-  if (typeof p !== 'number' || Number.isNaN(p)) return null;
+  if (!Number.isFinite(p)) return null;
   return Math.min(100, Math.max(0, Math.round(p)));
 }
 
 function isUnread(t) {
-  const seen = t.labels?.['herdr.seen'];
-  if (seen === undefined || seen === null || seen === '') return false;
+  const seen = String(t.labels?.['herdr.seen'] ?? '').trim();
+  if (seen === '') return false;
   return Number(seen) < t.turn;
 }
 
@@ -80,37 +80,47 @@ export class TerminalStore extends EventEmitter {
     this._records = new Map(terminals.map((t) => [t.address, t]));
     this.seq = seq;
     this.ready = true;
-    if (emitTransitions) {
-      for (const t of terminals) {
-        if (!isLive(t)) continue;
-        const prev = old.get(t.address);
-        if (prev && !isLive(prev)) continue;
-        this._transition(prev ? toListItem(prev).status : 'idle', t);
+    // 'changed' fires even if a transition listener throws; that error still propagates afterwards.
+    try {
+      if (emitTransitions) {
+        for (const t of terminals) {
+          if (!isLive(t)) continue;
+          const prev = old.get(t.address);
+          if (prev && !isLive(prev)) continue;
+          this._transition(prev ? toListItem(prev).status : 'idle', t);
+        }
       }
+    } finally {
+      this.emit('changed');
     }
-    this.emit('changed');
   }
 
   apply({ type, terminal, seq, data }) {
-    if (seq <= this.seq) return;
+    if (!Number.isFinite(seq) || !(seq > this.seq)) return; // also drops missing/garbage seqs
     this.seq = seq;
     if (type === 'heartbeat') return;
     const prev = this._records.get(terminal);
+    let from = null; // status to transition from, when both old and new records are live
     if (type === 'created') {
       this._records.set(terminal, data);
-      if (isLive(data)) this._transition('idle', data);
+      if (isLive(data)) from = isLive(prev) ? toListItem(prev).status : 'idle'; // a duplicate merges
     } else if (type === 'removed') {
+      if (!prev) return;
       this._records.delete(terminal);
     } else if (prev) {
       const next = { ...prev, ...data };
       if (type === 'labels') next.labels = { ...prev.labels, ...data.labels };
       if (type === 'finished') next.state = 'finished';
       this._records.set(terminal, next);
-      if (isLive(prev) && isLive(next)) this._transition(toListItem(prev).status, next);
+      if (isLive(prev) && isLive(next)) from = toListItem(prev).status;
     } else {
       return;
     }
-    this.emit('changed');
+    try {
+      if (from !== null) this._transition(from, this._records.get(terminal));
+    } finally {
+      this.emit('changed');
+    }
   }
 
   _transition(from, t) {
@@ -132,8 +142,8 @@ export class TerminalStore extends EventEmitter {
       .sort(
         (a, b) =>
           (URGENCY[a.status] ?? 3) - (URGENCY[b.status] ?? 3) ||
-          a.space.localeCompare(b.space) ||
-          a.address.localeCompare(b.address),
+          a.space.localeCompare(b.space, undefined, { numeric: true }) ||
+          a.address.localeCompare(b.address, undefined, { numeric: true }),
       );
   }
 }

@@ -207,3 +207,78 @@ test('ready is false until the first reset', () => {
   s.reset({ seq: 0, terminals: [] }, { emitTransitions: false });
   assert.equal(s.ready, true);
 });
+
+test('B9: events with a missing or non-numeric seq are ignored and do not corrupt seq', () => {
+  const s = new TerminalStore();
+  s.reset(snapshot(), { emitTransitions: false });
+  let changed = 0;
+  s.on('changed', () => changed++);
+  for (const seq of [undefined, null, 'abc', '200', NaN]) {
+    s.apply({ type: 'status', terminal: 't1', seq, data: { status: { app: 'x', state: 'working' } } });
+  }
+  assert.equal(s.seq, 91);
+  assert.equal(changed, 0);
+  assert.equal(s.get('t1').status, 'done');
+  s.apply({ type: 'status', terminal: 't1', seq: 92, data: { status: { app: 'x', state: 'working' } } });
+  assert.equal(s.get('t1').status, 'working');
+  assert.equal(s.seq, 92);
+});
+
+test('B10: removed for an unknown address is a no-op (no changed)', () => {
+  const s = new TerminalStore();
+  s.reset(snapshot(), { emitTransitions: false });
+  let changed = 0;
+  s.on('changed', () => changed++);
+  s.apply({ type: 'removed', terminal: 't404', seq: 92, data: {} });
+  assert.equal(changed, 0);
+  assert.equal(s.seq, 92);
+});
+
+test('B11: a duplicate created for a live address transitions from its current status', () => {
+  const s = new TerminalStore();
+  s.reset(snapshot(), { emitTransitions: false });
+  const tr = collect(s);
+  s.apply({ type: 'created', terminal: 't1', seq: 92, data: claude('t1', 'done', 'demo / 1') });
+  assert.equal(tr.length, 0);
+  s.apply({ type: 'created', terminal: 't1', seq: 93, data: claude('t1', 'working', 'demo / 1') });
+  assert.deepEqual(tr.map((e) => [e.from, e.to]), [['done', 'working']]);
+});
+
+test('B12: a throwing transition listener still lets changed fire, and its error is rethrown', () => {
+  const s = new TerminalStore();
+  s.reset(snapshot(), { emitTransitions: false });
+  let changed = 0;
+  s.on('changed', () => changed++);
+  s.on('transition', () => { throw new Error('listener boom'); });
+  assert.throws(
+    () => s.apply({ type: 'status', terminal: 't1', seq: 92, data: { status: { app: 'x', state: 'working' } } }),
+    /listener boom/,
+  );
+  assert.equal(changed, 1);
+  assert.equal(s.get('t1').status, 'working');
+  const snap = snapshot();
+  snap.terminals[0].status.state = 'blocked';
+  assert.throws(() => s.reset(snap), /listener boom/);
+  assert.equal(changed, 2);
+});
+
+test('B13: list sorts addresses and spaces numerically (t2 before t10)', () => {
+  const s = new TerminalStore();
+  s.reset({
+    seq: 1,
+    terminals: [
+      claude('t10', 'idle', 'demo / 1'), claude('t2', 'idle', 'demo / 1'), claude('t1', 'idle', 'demo / 1'),
+      claude('t3', 'idle', 'space10 / 1'), claude('t4', 'idle', 'space9 / 1'),
+    ],
+  }, { emitTransitions: false });
+  assert.deepEqual(s.list().map((i) => i.address), ['t1', 't2', 't10', 't4', 't3']);
+});
+
+test('B18: non-finite progress is null; blank herdr.seen counts as missing', () => {
+  const p = (progress) => toListItem(detailed({ status: { app: 'x', state: 'working', progress } })).progress;
+  assert.equal(p(Infinity), null);
+  assert.equal(p(-Infinity), null);
+  const u = (seen) => toListItem(detailed({ turn: 4, labels: { 'herdr.seen': seen } })).unread;
+  assert.equal(u('  '), false);
+  assert.equal(u(' 3 '), true);
+});
