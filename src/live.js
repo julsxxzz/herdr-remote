@@ -22,7 +22,7 @@ function parseHistory(raw) {
 
 export function attachWebSockets(server, {
   config, state, store, hc, sessions, notifier, log = () => {},
-  maxObservers = 8, maxBufferedBytes = 4 * 1024 * 1024,
+  maxObservers = 8, maxBufferedBytes = 4 * 1024 * 1024, heartbeatMs = 30000,
 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE });
   let observers = 0;
@@ -145,6 +145,8 @@ export function attachWebSockets(server, {
     if (!sessions.check(readSessionToken(req.headers.cookie))) return refuse(socket, 401, 'Unauthorized');
 
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
       ws.on('error', () => {});
       if (route === '/ws/list') return listSocket(ws);
       const address = url.searchParams.get('address');
@@ -153,10 +155,21 @@ export function attachWebSockets(server, {
     });
   }
 
+  // Phones drop off networks without a close frame: ping, and terminate sockets that never pong.
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, heartbeatMs);
+  heartbeat.unref?.();
+
   server.on('upgrade', onUpgrade);
 
   return {
     close() {
+      clearInterval(heartbeat);
       server.off('upgrade', onUpgrade);
       for (const release of [...cleanups]) release();
       for (const ws of wss.clients) ws.terminate();

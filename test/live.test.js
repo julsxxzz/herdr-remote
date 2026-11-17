@@ -80,9 +80,9 @@ async function restart(opts) {
   await start(opts);
 }
 
-function open(p) {
+function open(p, wsOpts = {}) {
   const headers = { cookie: `hr_session=${token}`, origin: ORIGIN, 'tailscale-user-login': LOGIN };
-  const ws = new WebSocket(`ws://127.0.0.1:${port}${p}`, { headers });
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${p}`, { headers, ...wsOpts });
   sockets.push(ws);
   const msgs = [];
   const info = { ws, msgs, closed: null };
@@ -207,4 +207,24 @@ test('spawn error ends the stream instead of crashing', async () => {
   await waitFor(() => c.closed !== null);
   assert.equal(c.closed, 1000);
   assert.ok(c.msgs.some((m) => m.type === 'ended'));
+});
+
+test('heartbeat terminates a /ws/term client that stops ponging and kills its child', async () => {
+  await restart({ heartbeatMs: 100 });
+  const c = open('/ws/term?address=t1', { autoPong: false });
+  await waitFor(() => c.msgs.length >= 2);
+  assert.equal(children.length, 1);
+  await waitFor(() => children[0].exitCode !== null || children[0].killed, 3000);
+  await waitFor(() => c.closed !== null);
+});
+
+test('heartbeat terminates a silent /ws/list client and clears visibility; live clients survive', async () => {
+  await restart({ heartbeatMs: 100 });
+  const dead = open('/ws/list', { autoPong: false });
+  const alive = open('/ws/list');
+  await waitFor(() => dead.msgs.length === 1 && alive.msgs.length === 1);
+  await waitFor(() => dead.closed !== null);
+  assert.ok(visible.some(([, a]) => a === null));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(alive.closed, null);
 });
