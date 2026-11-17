@@ -1,0 +1,135 @@
+import { test, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHc, isValidAddress, isValidKeyName } from '../src/hc.js';
+
+const fakeHcPath = fileURLToPath(new URL('./fixtures/fake-hc.mjs', import.meta.url));
+let dir;
+let hc;
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-hc-'));
+  hc = createHc({
+    command: process.execPath,
+    prefixArgs: [fakeHcPath],
+    env: { ...process.env, FAKE_HC_DIR: dir },
+  });
+});
+
+afterEach(() => {
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const calls = () => {
+  const p = path.join(dir, 'calls.jsonl');
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+};
+const put = (name, content) => fs.writeFileSync(path.join(dir, name), content);
+
+test('send passes text verbatim after --', async () => {
+  const text = '--force "a" & b\nline2';
+  const r = await hc.send('t3', text);
+  assert.deepEqual(r, { ok: true });
+  assert.deepEqual(calls().at(-1), ['send', 't3', '--', text]);
+});
+
+test('send failure uses JSON stderr message', async () => {
+  put('exit', '1');
+  put('stderr', '{"error":{"kind":"blocked","message":"it is showing a dialog"}}');
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'it is showing a dialog' });
+});
+
+test('send failure falls back to plain stderr, then exit code', async () => {
+  put('exit', '1');
+  put('stderr', 'oops\n');
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'oops' });
+  put('stderr', '');
+  assert.deepEqual(await hc.send('t3', 'hi'), { ok: false, error: 'hc exited with code 1' });
+});
+
+test('keys passes names after --', async () => {
+  const r = await hc.keys('t3', ['shift+tab', 'enter']);
+  assert.deepEqual(r, { ok: true });
+  assert.deepEqual(calls().at(-1), ['keys', 't3', '--', 'shift+tab', 'enter']);
+});
+
+test('invalid input throws TypeError and spawns nothing', async () => {
+  await assert.rejects(hc.send('-x', 'hi'), TypeError);
+  await assert.rejects(hc.keys('t3', ['--force']), TypeError);
+  await assert.rejects(hc.keys('t3', 'enter'), TypeError);
+  await assert.rejects(hc.get('../x/'.repeat(30)), TypeError);
+  assert.deepEqual(calls(), []);
+});
+
+test('validators', () => {
+  assert.equal(isValidAddress('t3'), true);
+  assert.equal(isValidAddress('a/b.c-d_e'), true);
+  assert.equal(isValidAddress('-x'), false);
+  assert.equal(isValidAddress(''), false);
+  assert.equal(isValidAddress('a'.repeat(65)), false);
+  assert.equal(isValidAddress(5), false);
+  assert.equal(isValidKeyName('shift+tab'), true);
+  assert.equal(isValidKeyName('Enter'), true);
+  assert.equal(isValidKeyName('--force'), false);
+  assert.equal(isValidKeyName('+a'), false);
+});
+
+test('ls returns the terminals array', async () => {
+  put('ls.json', JSON.stringify({ hidden_finished: 0, terminals: [{ address: 't1' }, { address: 't2' }] }));
+  assert.deepEqual(await hc.ls(), [{ address: 't1' }, { address: 't2' }]);
+  assert.deepEqual(calls().at(-1), ['ls', '--json']);
+});
+
+test('get returns the parsed terminal', async () => {
+  put('get.json', JSON.stringify({ address: 't3', turn: 4 }));
+  assert.deepEqual(await hc.get('t3'), { address: 't3', turn: 4 });
+  assert.deepEqual(calls().at(-1), ['get', 't3', '--json']);
+});
+
+test('run kills on timeout with code -1', async () => {
+  const slow = createHc({
+    command: process.execPath,
+    prefixArgs: ['-e', 'setInterval(()=>{},1000)'],
+  });
+  const r = await slow.run([], { timeoutMs: 200 });
+  assert.equal(r.code, -1);
+});
+
+test('observe streams screen bytes until killed', async () => {
+  const bytes = Buffer.from([0x1b, 0x5b, 0x32, 0x4a, 0x68, 0x69]);
+  put('screen.bin', bytes);
+  const child = hc.observe('t3', { history: 200 });
+  try {
+    const chunks = [];
+    await new Promise((resolve) => {
+      child.stdout.on('data', (c) => {
+        chunks.push(c);
+        if (Buffer.concat(chunks).length >= bytes.length) resolve();
+      });
+    });
+    assert.deepEqual(Buffer.concat(chunks), bytes);
+    assert.deepEqual(calls().at(-1), ['attach', 't3', '--observe', '--history', '200']);
+  } finally {
+    const closed = new Promise((r) => child.once('close', r));
+    child.kill();
+    await closed;
+  }
+});
+
+test('events spawns hc events --json and stays alive', async () => {
+  put('events.jsonl', '{"seq":1}\n');
+  const child = hc.events();
+  try {
+    const line = await new Promise((resolve) => child.stdout.once('data', resolve));
+    assert.equal(line.toString(), '{"seq":1}\n');
+    assert.deepEqual(calls().at(-1), ['events', '--json']);
+  } finally {
+    const closed = new Promise((r) => child.once('close', r));
+    child.kill();
+    await closed;
+  }
+});

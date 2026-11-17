@@ -1,0 +1,14 @@
+{
+  "name": "herdr-remote",
+  "short_name": "herdr",
+  "description": "Watch and answer your Herdr agent sessions from your phone.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#151b22",
+  "theme_color": "#151b22",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
