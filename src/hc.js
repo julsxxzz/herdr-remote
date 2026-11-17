@@ -10,7 +10,8 @@ function assertAddress(address) {
   if (!isValidAddress(address)) throw new TypeError('invalid terminal address');
 }
 
-function errorMessage({ code, stderr }) {
+function errorMessage({ code, stderr, timedOut }) {
+  if (timedOut) return 'hc timed out (the command may or may not have been delivered)';
   const text = stderr.trim();
   try {
     const message = JSON.parse(text)?.error?.message;
@@ -21,36 +22,46 @@ function errorMessage({ code, stderr }) {
   return text || `hc exited with code ${code}`;
 }
 
-export function createHc({ command = 'hc', prefixArgs = [], env } = {}) {
+export function createHc({
+  command = 'hc', prefixArgs = [], env, timeoutMs: defaultTimeoutMs = 15000,
+  killGraceMs = 2000, spawnImpl = spawn, // overridable for tests
+} = {}) {
   // Always an argv array, never a shell.
-  const spawnHc = (args, stdio) =>
-    spawn(command, [...prefixArgs, ...args], { env, stdio, windowsHide: true });
+  const spawnHc = (args, stdio, signal) =>
+    spawnImpl(command, [...prefixArgs, ...args], { env, stdio, windowsHide: true, signal });
 
-  function run(args, { timeoutMs = 15000 } = {}) {
+  // `signal` aborts the command: the child is killed and the promise rejects with an AbortError.
+  function run(args, { timeoutMs = defaultTimeoutMs, signal } = {}) {
     return new Promise((resolve, reject) => {
-      const child = spawnHc(args, ['ignore', 'pipe', 'pipe']);
+      const child = spawnHc(args, ['ignore', 'pipe', 'pipe'], signal);
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      let settled = false;
+      let graceTimer = null;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(graceTimer);
+        fn(value);
+      };
+      const result = (code) => ({ code: timedOut ? -1 : (code ?? -1), stdout, stderr, timedOut });
       child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
       child.stderr.setEncoding('utf8').on('data', (d) => (stderr += d));
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill();
+        // A grandchild holding the pipes can keep 'close' from ever firing: don't wait forever.
+        graceTimer = setTimeout(() => finish(resolve, result(-1)), killGraceMs);
       }, timeoutMs);
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        resolve({ code: timedOut ? -1 : (code ?? -1), stdout, stderr });
-      });
+      child.on('error', (err) => finish(reject, err));
+      child.on('close', (code) => finish(resolve, result(code)));
     });
   }
 
-  async function runJson(args) {
-    const r = await run(args);
+  async function runJson(args, opts) {
+    const r = await run(args, opts);
     if (r.code !== 0) throw new Error(errorMessage(r));
     return JSON.parse(r.stdout);
   }
@@ -62,8 +73,8 @@ export function createHc({ command = 'hc', prefixArgs = [], env } = {}) {
 
   return {
     run,
-    async ls() {
-      return (await runJson(['ls', '--json'])).terminals;
+    async ls({ signal } = {}) {
+      return (await runJson(['ls', '--json'], { signal }))?.terminals ?? [];
     },
     async get(address) {
       assertAddress(address);

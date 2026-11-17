@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { createHc, isValidAddress, isValidKeyName } from '../src/hc.js';
 
@@ -132,4 +134,51 @@ test('events spawns hc events --json and stays alive', async () => {
     child.kill();
     await closed;
   }
+});
+
+test('B6: a timed-out send/keys reports "hc timed out", not an exit code', async () => {
+  const slow = createHc({ command: process.execPath, prefixArgs: ['-e', 'setInterval(()=>{},1000)'], timeoutMs: 200 });
+  const s = await slow.send('t3', 'hi');
+  assert.equal(s.ok, false);
+  assert.match(s.error, /^hc timed out/);
+  assert.match(s.error, /may or may not/);
+  const k = await slow.keys('t3', ['enter']);
+  assert.match(k.error, /^hc timed out/);
+});
+
+test('B7: ls returns [] when the JSON has no terminals, and still throws on non-JSON', async () => {
+  put('ls.json', JSON.stringify({ hidden_finished: 0 }));
+  assert.deepEqual(await hc.ls(), []);
+  put('ls.json', 'not json');
+  await assert.rejects(hc.ls(), SyntaxError);
+});
+
+// A child whose kill() does nothing and whose pipes never close (a grandchild holding them).
+function stuckChild() {
+  const c = new EventEmitter();
+  c.stdout = new PassThrough();
+  c.stderr = new PassThrough();
+  c.kills = 0;
+  c.kill = () => { c.kills++; return true; };
+  return c;
+}
+
+test('B8: run settles with code -1 after the kill grace even if close never fires', async () => {
+  const child = stuckChild();
+  const stub = createHc({ spawnImpl: () => child, killGraceMs: 100 });
+  const t0 = Date.now();
+  const r = await stub.run([], { timeoutMs: 50 });
+  assert.equal(r.code, -1);
+  assert.equal(r.timedOut, true);
+  assert.equal(child.kills, 1);
+  assert.ok(Date.now() - t0 < 1500);
+});
+
+test('B8: a late close after the grace does not settle twice', async () => {
+  const child = stuckChild();
+  const stub = createHc({ spawnImpl: () => child, killGraceMs: 50 });
+  const r = await stub.run([], { timeoutMs: 20 });
+  assert.equal(r.code, -1);
+  child.emit('close', 0); // must be ignored, not throw
+  child.emit('error', new Error('late'));
 });

@@ -28,17 +28,24 @@ const ACCESS_MODES = ['tailscale', 'proxy'];
 export function configDir({ env = process.env, platform = process.platform, home } = {}) {
   if (home) return home;
   if (env.HERDR_REMOTE_HOME) return env.HERDR_REMOTE_HOME;
-  if (platform === 'win32') return path.join(env.APPDATA, 'herdr-remote');
+  if (platform === 'win32') {
+    return path.join(env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'herdr-remote');
+  }
   return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'herdr-remote');
 }
 
 function readJson(file) {
+  let value;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') return {};
     throw err;
   }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${file} must contain a JSON object`);
+  }
+  return value;
 }
 
 function writeJsonAtomic(dir, name, value) {
