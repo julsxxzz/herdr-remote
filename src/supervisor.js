@@ -21,11 +21,11 @@ export const pidFilePath = (home) => path.join(home, 'server.pid');
 const stopRequestPath = (home) => path.join(home, 'server.stop');
 const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
 
-const processAlive = (pid) => {
+export const processAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 };
 
-function readPid(file) {
+export function readPid(file) {
   try {
     const pid = Number(fs.readFileSync(file, 'utf8').trim());
     return Number.isInteger(pid) && pid > 0 ? pid : null;
