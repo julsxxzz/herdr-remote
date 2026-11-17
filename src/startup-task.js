@@ -1,18 +1,76 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const TASK_NAME = 'herdr-remote';
+const VBS_NAME = 'start-hidden.vbs';
+const XML_NAME = 'herdr-remote-task.xml';
 
-export function taskCommands({ nodePath, cliPath, home }) {
+const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]
+));
+
+// The Windows account the task belongs to, computed on the user's machine at install time.
+export function defaultUserId({ env = process.env, userInfo = os.userInfo } = {}) {
+  if (env.USERDOMAIN && env.USERNAME) return `${env.USERDOMAIN}\\${env.USERNAME}`;
+  return userInfo().username;
+}
+
+const vbsPathFor = (home) => path.win32.join(path.win32.resolve(home), VBS_NAME);
+
+// Task Scheduler definition (schema 1.2). An XML task instead of /SC ONLOGON flags so the trigger is
+// limited to this user's logon, it runs without elevation, and it is never stopped after the default
+// 72 h time limit or on battery.
+export function taskXml({ home, userId }) {
+  const user = xmlEscape(userId);
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>herdr-remote (start at log on)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>${xmlEscape(`"${vbsPathFor(home)}"`)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+export function taskCommands({ nodePath, cliPath, home, userId = defaultUserId() }) {
   const absHome = path.win32.resolve(home);
-  const vbsPath = path.win32.join(absHome, 'start-hidden.vbs');
+  const xmlPath = path.win32.join(absHome, XML_NAME);
   return {
     vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start --home ""${absHome}""", 0, False\n`,
-    create: [
-      'schtasks', '/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', TASK_NAME,
-      '/TR', `wscript.exe "${vbsPath}"`,
-    ],
+    vbsPath: vbsPathFor(absHome),
+    xml: taskXml({ nodePath, cliPath, home: absHome, userId }),
+    xmlPath,
+    create: ['schtasks', '/Create', '/F', '/TN', TASK_NAME, '/XML', xmlPath],
     remove: ['schtasks', '/Delete', '/F', '/TN', TASK_NAME],
   };
 }
@@ -36,17 +94,20 @@ export function runCommand(cmd, args) {
   });
 }
 
-export async function installTask({ home, nodePath = process.execPath, cliPath, exec = runCommand }) {
-  const t = taskCommands({ nodePath, cliPath, home });
+export async function installTask({ home, nodePath = process.execPath, cliPath, exec = runCommand, userId }) {
+  const t = taskCommands({ nodePath, cliPath, home, userId });
   fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(path.join(home, 'start-hidden.vbs'), t.vbs);
+  fs.writeFileSync(path.join(home, VBS_NAME), t.vbs);
+  // schtasks /XML requires UTF-16 (little-endian, with BOM).
+  fs.writeFileSync(path.join(home, XML_NAME), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(t.xml, 'utf16le')]));
   const r = await exec(t.create[0], t.create.slice(1));
   if (r.code !== 0) throw new Error(`schtasks create failed: ${(r.stderr || r.stdout).trim()}`);
 }
 
 export async function uninstallTask({ home, nodePath = process.execPath, cliPath, exec = runCommand }) {
-  const t = taskCommands({ nodePath, cliPath, home });
+  const t = taskCommands({ nodePath, cliPath, home, userId: '' });
   const r = await exec(t.remove[0], t.remove.slice(1));
-  fs.rmSync(path.join(home, 'start-hidden.vbs'), { force: true });
+  fs.rmSync(path.join(home, VBS_NAME), { force: true });
+  fs.rmSync(path.join(home, XML_NAME), { force: true });
   if (r.code !== 0) throw new Error(`schtasks delete failed: ${(r.stderr || r.stdout).trim()}`);
 }

@@ -53,11 +53,13 @@ Commands (`herdr-remote` if installed with the `bin` entry, otherwise `node src/
 
 | Command | What it does |
 |---|---|
-| `start [--foreground] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. |
-| `stop [--home <dir>]` | Stop the running server (prints `stopped` or `not running`). |
+| `start [--foreground] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. Refuses (exit 78) if another copy already runs for the same home. |
+| `stop [--home <dir>]` | Stop the running server, supervised or `--foreground` (prints `stopped` or `not running`). |
 | `setup [--proxy] [--home <dir>]` | Interactive setup. Safe to re-run, but only while the server is stopped (it refuses otherwise). |
 | `install-task [--home <dir>]` | Start at Windows login (Task Scheduler task `herdr-remote`, hidden window). |
 | `uninstall-task [--home <dir>]` | Remove that task. |
+
+The start-at-login task is created from an XML definition (`<home>\herdr-remote-task.xml`, next to the hidden launcher `start-hidden.vbs`). It triggers only when you log on to Windows (your `DOMAIN\user` account), runs without elevation, has no time limit (Task Scheduler's default would stop it after 72 hours) and keeps running on battery. A normal, non-admin prompt is enough to install it. `uninstall-task` removes the task and both files.
 
 To change settings later: `herdr-remote stop`, then `npm run setup`, then `npm start` again. The running server keeps its config in memory, so setup refuses to run while it answers on its port.
 
@@ -103,11 +105,12 @@ The web address and the login change. Run `herdr-remote stop`, re-run `npm run s
 - **"This account or network isn’t allowed to open herdr-remote."** (HTTP 403): the phone is signed in to Tailscale as a different login than the one set up. Sign in with the right account, or re-run setup with the right login.
 - **Page does not load:** is the PC awake, is the server running (check `<home>\logs\server.log`), and is `tailscale serve --bg 4780` active (`tailscale serve status`)?
 - **"needs setup" / server exits at start:** config is missing or invalid. Run `npm run setup`. The supervisor does not restart in this case.
+- **"herdr-remote is already running (pid N) — use "herdr-remote stop" first."**: a copy for this home is already running. Leave it, or stop it first.
 - **"port 4780 already in use — is herdr-remote already running?"** in the log: another copy (or another program) holds the port. Run `herdr-remote stop`, or free the port. The supervisor does not restart in this case either.
 - **"herdr-remote is running — stop it first: herdr-remote stop"** from setup: stop the server, run setup, then start it again.
 - **No push:** the address must be the https `ts.net` one (HTTPS certificates enabled); notification permission must be allowed in Android/Chrome site settings; desk mode must be off; the matching trigger must be on in Settings; and you must have tapped Enable notifications on this device after the last setup change.
 - **`hc` not found:** put herdr-core's folder (default `%LOCALAPPDATA%\Programs\herdr-core\`) on PATH, or re-run setup and give the full path to `hc`.
-- **Start-at-login does not start it:** run `node src/cli.js install-task` again, then check `schtasks /Query /TN herdr-remote` and the log file.
+- **Start-at-login does not start it:** run `node src/cli.js install-task` again, then check `schtasks /Query /TN herdr-remote /V /FO LIST` (its "Run As User" must be your account) and the log file.
 
 ## Uninstall
 
