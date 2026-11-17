@@ -10,6 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   superviseServer, stopRunning, pidFilePath, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
+  SERVER_NODE_FLAGS,
 } from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-sup-'));
@@ -110,6 +111,30 @@ test('I3: stopRunning reports "not running" without a pid file, and removes a st
   fs.writeFileSync(pidFilePath(home), '424242');
   assert.equal(await stopRunning({ home, isAlive: () => false }), 'not running');
   assert.equal(fs.existsSync(pidFilePath(home)), false);
+});
+
+test('lighter: stopRunning leaves a stop request when nothing runs (for a launcher waiting to restart), and a later start clears it', async () => {
+  const home = tmp();
+  const stopFile = path.join(home, 'server.stop');
+  assert.equal(await stopRunning({ home }), 'not running');
+  assert.equal(fs.existsSync(stopFile), true);
+  fs.rmSync(stopFile);
+  fs.writeFileSync(pidFilePath(home), '424242');
+  assert.equal(await stopRunning({ home, isAlive: () => false }), 'not running');
+  assert.equal(fs.existsSync(stopFile), true);
+  // A server that starts afterwards claims the pid file and drops the leftover request: it keeps running.
+  let stopped = false;
+  const claim = await claimPidFile(home, { onStopRequest: () => { stopped = true; }, pollMs: 20, portAnswers: async () => false });
+  try {
+    assert.equal(claim.ok, true);
+    assert.equal(fs.existsSync(stopFile), false);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(stopped, false);
+  } finally {
+    claim.release();
+  }
+  // No home at all: still just "not running".
+  assert.equal(await stopRunning({ home: path.join(home, 'missing') }), 'not running');
 });
 
 test('I3: pid file is removed when the supervisor finishes on its own', async () => {
@@ -268,6 +293,35 @@ test('B21: a child error while it is still alive kills it and restarts only afte
   } finally {
     await sup.stop();
   }
+});
+
+test('lighter: the supervisor forks the server with the server flags (and nothing inherited)', async () => {
+  const home = tmp();
+  const calls = [];
+  const forkImpl = (entry, args, opts) => { calls.push({ entry, args, opts }); return stubChild({ exitOnKill: true }); };
+  const sup = superviseServer({ home, forkImpl, execArgv: ['--max-old-space-size=128'] });
+  const sup2 = superviseServer({ home: tmp(), forkImpl });
+  try {
+    assert.ok(await until(() => calls.length === 2));
+    const mine = calls.find((c) => c.args.includes(home));
+    const other = calls.find((c) => c !== mine);
+    assert.deepEqual(mine.opts.execArgv, ['--max-old-space-size=128']);
+    assert.deepEqual(mine.args, ['start', '--foreground', '--home', home]);
+    // The default is SERVER_NODE_FLAGS, never the supervisor's own execArgv (e.g. --inspect).
+    assert.deepEqual(other.opts.execArgv, [...SERVER_NODE_FLAGS]);
+  } finally {
+    await sup.stop();
+    await sup2.stop();
+  }
+});
+
+test('lighter: npm start and npm run dev pass the same server flags to node', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  for (const name of ['start', 'dev']) {
+    assert.ok(pkg.scripts[name].startsWith(['node', ...SERVER_NODE_FLAGS, 'src/cli.js start'].join(' ')), `${name}: ${pkg.scripts[name]}`);
+  }
+  assert.ok(pkg.scripts.dev.includes('--foreground'));
+  assert.ok(!pkg.scripts.start.includes('--foreground')); // manual start keeps the quick-restart supervisor
 });
 
 test('B21: a spawn error (no pid) is still treated as an end and retried', async () => {

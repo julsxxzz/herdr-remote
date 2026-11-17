@@ -47,19 +47,21 @@ npm start
 5. Offers to start herdr-remote at Windows login.
 6. Prints the URL to open on your phone, e.g. `https://box.example.ts.net`.
 
-`npm start` runs the server under a supervisor that restarts it after a crash. Use `node src/cli.js start --foreground` to run it in the current console instead (no restart). The server listens on `127.0.0.1:4780` only; `tailscale serve` is the only way in. Never use Tailscale Funnel.
+`npm start` runs the server under a supervisor that restarts it 1 to 30 seconds after a crash. Use `node src/cli.js start --foreground` to run it in the current console instead (no restart): it is the lightest way to run it, one Node process instead of two (see [Memory](#memory)). The server listens on `127.0.0.1:4780` only; `tailscale serve` is the only way in. Never use Tailscale Funnel.
 
 Commands (`herdr-remote` if installed with the `bin` entry, otherwise `node src/cli.js`):
 
 | Command | What it does |
 |---|---|
-| `start [--foreground] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. Refuses (exit 78) if another copy already runs for the same home. |
+| `start [--foreground [--log]] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. `--log` sends its output to `<home>\logs\server.log` instead of the console. Refuses (exit 78) if another copy already runs for the same home. |
 | `stop [--home <dir>]` | Stop the running server, supervised or `--foreground` (prints `stopped` or `not running`). |
 | `setup [--proxy] [--home <dir>]` | Interactive setup. Safe to re-run, but only while the server is stopped (it refuses otherwise). |
 | `install-task [--home <dir>]` | Start at Windows login (Task Scheduler task `herdr-remote`, hidden window). |
-| `uninstall-task [--home <dir>]` | Remove that task. |
+| `uninstall-task [--home <dir>]` | Remove that task (and end its hidden launcher; a running server stays up until `stop`). |
 
-The start-at-login task is created from an XML definition (`<home>\herdr-remote-task.xml`, next to the hidden launcher `start-hidden.vbs`). It triggers only when you log on to Windows (your `DOMAIN\user` account), runs without elevation, has no time limit (Task Scheduler's default would stop it after 72 hours) and keeps running on battery. A normal, non-admin prompt is enough to install it. `uninstall-task` removes the task and both files.
+The start-at-login task is created from an XML definition (`<home>\herdr-remote-task.xml`, next to the hidden launcher `start-hidden.vbs`). It triggers only when you log on to Windows (your `DOMAIN\user` account), runs without elevation, has no time limit (Task Scheduler's default would stop it after 72 hours) and keeps running on battery. A normal, non-admin prompt is enough to install it. `uninstall-task` ends the task's hidden launcher, then removes the task and both files. It does not stop a running server: that keeps running, with no restart after a crash, until `herdr-remote stop`. Ending the task in Task Scheduler ("End") likewise ends only the launcher: the server keeps running, but is no longer restarted.
+
+The task runs the server directly (`start --foreground --log`), without the supervisor, to save a whole Node process (see [Memory](#memory)). The hidden launcher waits for it and, if it crashes (or is ended in Task Manager), runs it again after 1 s, then 2, 4, 8, 16 and 30 s between tries (back to 1 s once a run lasted a minute). `herdr-remote stop` (also while it waits to restart it), a missing setup or a busy port end it for good, as before. Task Scheduler's "restart on failure" (every minute, up to 999 times) is only a backstop in case the launcher itself fails. Run `install-task` again after updating herdr-remote so the task picks this up.
 
 To change settings later: `herdr-remote stop`, then `npm run setup`, then `npm start` again. The running server keeps its config in memory, so setup refuses to run while it answers on its port.
 
@@ -111,9 +113,10 @@ The web address and the login change. Run `herdr-remote stop`, re-run `npm run s
 
 - **"This account or network isn’t allowed to open herdr-remote."** (HTTP 403): the phone is signed in to Tailscale as a different login than the one set up. Sign in with the right account, or re-run setup with the right login.
 - **Page does not load:** is the PC awake, is the server running (check `<home>\logs\server.log`), and is `tailscale serve --bg 4780` active (`tailscale serve status`)?
-- **"needs setup" / server exits at start:** config is missing or invalid. Run `npm run setup`. The supervisor does not restart in this case.
+- **Server never starts at logon (start-at-login task):** open `taskschd.msc`, find `herdr-remote` and check its "Last Run Result" (1 means the launcher could not start node at all), then `<home>\logs\server.log`. After moving the herdr-remote folder or upgrading/reinstalling Node, run `node src/cli.js install-task` again: the launcher holds the full paths to both.
+- **"needs setup" / server exits at start:** config is missing or invalid. Run `npm run setup`. Neither the supervisor nor the start-at-login task restarts it in this case.
 - **"herdr-remote is already running (pid N) — use "herdr-remote stop" first."**: `server.pid` names a live process and something answers on the configured port, so a copy for this home is most likely running. Leave it, or stop it first. A pid file left behind by a logoff or shutdown is replaced automatically when nothing answers on the port. If herdr-remote isn't actually running (another program holds the port), delete `<home>\server.pid` (the message prints the full path); the same hint follows a `stop` that times out.
-- **"port 4780 already in use — is herdr-remote already running?"** in the log: another copy (or another program) holds the port. Run `herdr-remote stop`, or free the port. The supervisor does not restart in this case either.
+- **"port 4780 already in use — is herdr-remote already running?"** in the log: another copy (or another program) holds the port. Run `herdr-remote stop`, or free the port. Neither restarts it in this case either.
 - **"herdr-remote is running — stop it first: herdr-remote stop"** from setup: stop the server, run setup, then start it again.
 - **No push:** the address must be the https `ts.net` one (HTTPS certificates enabled); notification permission must be allowed in Android/Chrome site settings; desk mode must be off; the matching trigger must be on in Settings; and you must have tapped Enable notifications on this device after the last setup change.
 - **Messages arrive as if from an agent terminal, or new terminals get a parent:** herdr-remote strips `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET` and `HC_SCOPE` from every `hc` it runs, so messages are sent as from a plain client even when herdr-remote is started inside a Herdr terminal.
@@ -137,6 +140,18 @@ The web address and the login change. Run `herdr-remote stop`, re-run `npm run s
 - The Tailscale identity check is off. The PIN is still required, with rate limiting, Secure cookies and the Origin check.
 - Setup asks for the public origin (for example `https://remote.example.com`) and optionally one identity header and the value to trust (for example `Cf-Access-Authenticated-User-Email` = `you@example.com`).
 - The server still binds `127.0.0.1` unless you explicitly set `bind` in `config.json`.
+
+## Memory
+
+Measured on Windows 11 with Node 22.13.1, idle after 20 s and then with one live view open on a terminal printing 3 bursts of 20,000 lines (working set / private bytes, MB). Every child also has its own hidden `conhost.exe` (about 7.5 / 1.2 MB each), counted in the totals.
+
+| Way to run | Supervisor (node) | Server (node) | hc events | hc attach (1 live view) | Total with conhosts |
+|---|---|---|---|---|---|
+| Before this change: `npm start` and the start-at-login task (supervisor + server) | 46.5 / 55.6 | 50.9 / 56.6 | 11.3 / 1.7 | 11.3 / 1.7 | 149.6 / 120.4 |
+| Now: `npm start` (unchanged, supervisor + server) | 46.7 / 55.3 | 51.4 / 57.3 | 11.4 / 1.7 | 11.3 / 1.7 | 150.4 / 120.8 |
+| Now: start-at-login task (`start --foreground --log`) | none | 51.1 / 57.1 | 11.4 / 1.7 | 11.4 / 1.7 | 96.0 / 64.1 |
+
+So the start-at-login task now uses about 53.6 MB less working set and 56.3 MB less private memory than before (149.6 / 120.4 down to 96.0 / 64.1: the supervisor's Node process and its console host are gone); the hidden `wscript.exe` launcher stays resident to restart the server (not measured here). Node/V8 flags were tried on the server and none is used (`SERVER_NODE_FLAGS` in `src/supervisor.js` is empty): `--max-semi-space-size=1`, `--optimize-for-size`, `--max-old-space-size=128`, `--v8-pool-size=1` and their combination each changed the server by less than 2 MB with the same burst latency (about 250 ms), and `--lite-mode` stops it from starting at all (it turns off WebAssembly, and Node 22 then throws as soon as the server imports `node:http`, which loads its bundled undici).
 
 ## Development
 

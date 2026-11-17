@@ -13,7 +13,7 @@ import { createHc } from '../src/hc.js';
 import { hashPin } from '../src/auth.js';
 import { generateVapidKeys } from '../src/push.js';
 import { saveConfig, saveState, DEFAULT_STATE } from '../src/config.js';
-import { pidFilePath, stopRunning } from '../src/supervisor.js';
+import { pidFilePath, stopRunning, SERVER_NODE_FLAGS } from '../src/supervisor.js';
 
 const fakeHcPath = fileURLToPath(new URL('./fixtures/fake-hc.mjs', import.meta.url));
 const ORIGIN = 'http://127.0.0.1:4780';
@@ -267,6 +267,37 @@ test('B2: a standalone start --foreground owns server.pid and honours "stop"', a
   } finally {
     child.kill();
   }
+});
+
+test('lighter: the start-at-login command line (--foreground --log) runs, logs to the file and honours "stop"', async () => {
+  const home = foregroundHome();
+  const child = spawn(process.execPath, [...SERVER_NODE_FLAGS, CLI, 'start', '--foreground', '--log', '--home', home], { windowsHide: true });
+  let printed = '';
+  child.stdout.on('data', (d) => { printed += d; });
+  child.stderr.on('data', (d) => { printed += d; });
+  const logFile = path.join(home, 'logs', 'server.log');
+  try {
+    await waitFor(() => fs.existsSync(logFile) && fs.readFileSync(logFile, 'utf8').includes('listening on'), 10000);
+    assert.equal(fs.readFileSync(pidFilePath(home), 'utf8').trim(), String(child.pid));
+    assert.equal(await stopRunning({ home, pollMs: 25, waitMs: 10000 }), 'stopped');
+    assert.equal(await exitOf(child), 0); // the launcher maps 0 to "not a failure": no restart
+    assert.equal(fs.existsSync(pidFilePath(home)), false);
+    const text = fs.readFileSync(logFile, 'utf8');
+    assert.match(text, new RegExp(`starting \\(pid ${child.pid}\\)`));
+    assert.equal(printed, ''); // everything went to the log, nothing to the (hidden) console
+  } finally {
+    child.kill();
+  }
+});
+
+test('lighter: start --foreground --log puts a fatal error in the log file', async () => {
+  const { home } = mkdirs();
+  // No config: the server refuses with exit 78, and says why in the log.
+  const child = spawn(process.execPath, [CLI, 'start', '--foreground', '--log', '--home', home], { windowsHide: true });
+  child.stdout.resume();
+  child.stderr.resume();
+  assert.equal(await exitOf(child), 78);
+  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /npm run setup/);
 });
 
 test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', async () => {

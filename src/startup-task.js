@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { SERVER_NODE_FLAGS, EXIT_SETUP_REQUIRED } from './supervisor.js';
 
 const TASK_NAME = 'herdr-remote';
 const VBS_NAME = 'start-hidden.vbs';
+const STOP_NAME = 'server.stop'; // the stop request file, see stopRunning in supervisor.js
 const XML_NAME = 'herdr-remote-task.xml';
 
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => (
@@ -21,7 +23,9 @@ const vbsPathFor = (home) => path.win32.join(path.win32.resolve(home), VBS_NAME)
 
 // Task Scheduler definition (schema 1.2). An XML task instead of /SC ONLOGON flags so the trigger is
 // limited to this user's logon, it runs without elevation, and it is never stopped after the default
-// 72 h time limit or on battery.
+// 72 h time limit or on battery. There is no supervisor process at login (it cost a whole Node
+// process): the task's launcher runs the server itself and runs it again after a crash (launcherVbs);
+// <RestartOnFailure> is only a backstop in case the launcher itself fails.
 export function taskXml({ home, userId }) {
   const user = xmlEscape(userId);
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -47,6 +51,10 @@ export function taskXml({ home, userId }) {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
     <Enabled>true</Enabled>
@@ -62,15 +70,55 @@ export function taskXml({ home, userId }) {
 `;
 }
 
+// The hidden launcher, and the server's restarter at login (there is no supervisor process there). It
+// waits for the server and runs it again after a crash or a kill: 1 s, then 2, 4, 8, 16, 30 s between
+// tries, back to 1 s after a run that lasted a minute. Exit 0 (stopped with "herdr-remote stop") and
+// 78 (needs setup, port in use, already running: a restart would not help) end it, and so does a
+// "herdr-remote stop" made during the pause (it leaves <home>\server.stop, checked before each
+// relaunch; not before the first run, where a leftover file is cleared by the server's claim). If
+// node cannot be started at all (moved or upgraded), it quits with 1 instead of showing a WSH error
+// box. The loop lives here because Task Scheduler's "restart on failure" is not reliably triggered by
+// a non-zero exit code; the task's <RestartOnFailure> is only a backstop for the launcher itself.
+function launcherVbs({ nodePath, cliPath, absHome }) {
+  const flags = SERVER_NODE_FLAGS.map((f) => `${f} `).join('');
+  const cmd = `""${nodePath}"" ${flags}""${cliPath}"" start --foreground --log --home ""${absHome}""`;
+  const stopFile = path.win32.join(absHome, STOP_NAME);
+  return [
+    'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    `stopFile = "${stopFile}"`,
+    'pause = 1',
+    'Do',
+    '  started = Now',
+    '  On Error Resume Next',
+    `  rc = sh.Run("${cmd}", 0, True)`,
+    '  If Err.Number <> 0 Then WScript.Quit 1',
+    '  On Error GoTo 0',
+    `  If rc = 0 Or rc = ${EXIT_SETUP_REQUIRED} Then WScript.Quit 0`,
+    '  If DateDiff("s", started, Now) >= 60 Then pause = 1',
+    '  WScript.Sleep pause * 1000',
+    '  pause = pause * 2',
+    '  If pause > 30 Then pause = 30',
+    '  If fso.FileExists(stopFile) Then',
+    '    On Error Resume Next',
+    '    fso.DeleteFile stopFile',
+    '    WScript.Quit 0',
+    '  End If',
+    'Loop',
+    '',
+  ].join('\r\n');
+}
+
 export function taskCommands({ nodePath, cliPath, home, userId = defaultUserId() }) {
   const absHome = path.win32.resolve(home);
   const xmlPath = path.win32.join(absHome, XML_NAME);
   return {
-    vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start --home ""${absHome}""", 0, False\n`,
+    vbs: launcherVbs({ nodePath, cliPath, absHome }),
     vbsPath: vbsPathFor(absHome),
     xml: taskXml({ home: absHome, userId }),
     xmlPath,
     create: ['schtasks', '/Create', '/F', '/TN', TASK_NAME, '/XML', xmlPath],
+    end: ['schtasks', '/End', '/TN', TASK_NAME],
     remove: ['schtasks', '/Delete', '/F', '/TN', TASK_NAME],
   };
 }
@@ -109,6 +157,9 @@ export async function installTask({ home, nodePath = process.execPath, cliPath, 
 
 export async function uninstallTask({ home, nodePath = process.execPath, cliPath, exec = runCommand }) {
   const t = taskCommands({ nodePath, cliPath, home, userId: '' });
+  // End the running launcher first, so no hidden restarter outlives the task. It ends only the
+  // launcher: a running server stays up until "herdr-remote stop". Fails when not running: ignored.
+  await exec(t.end[0], t.end.slice(1));
   const r = await exec(t.remove[0], t.remove.slice(1));
   fs.rmSync(path.join(home, VBS_NAME), { force: true });
   fs.rmSync(path.join(home, XML_NAME), { force: true });
