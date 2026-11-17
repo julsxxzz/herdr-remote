@@ -31,8 +31,9 @@ html, body {
   font: 16px/1.4 var(--font);
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
-  overscroll-behavior-y: none; /* no pull-to-refresh reloading the app */
 }
+/* No pull-to-refresh reloading the app while a live view is shown; the list keeps it. */
+html.live-view, html.live-view body { overscroll-behavior-y: none; }
 body { overflow-x: hidden; }
 
 h1, h2, h3, p { margin: 0; }
@@ -223,10 +224,10 @@ button, input, textarea { font: inherit; color: inherit; }
   flex: none; display: flex; justify-content: flex-end;
   padding: 2px 8px; background: var(--bg); border-bottom: 1px solid var(--line);
 }
-.zoom { display: flex; gap: 2px; }
+.zoom { display: flex; gap: 6px; }
 .zoom .chip-btn { padding: 0 6px; font-variant-numeric: tabular-nums; }
 .zoom .chip-btn:not(.zoom-fit) { font-size: 20px; line-height: 1; }
-.zoom .zoom-fit { min-width: 56px; }
+.zoom .zoom-fit { min-width: 96px; white-space: nowrap; }
 .status-tag { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--st); margin-left: auto; }
 .status-tag .icon { width: 16px; height: 16px; }
 
@@ -239,7 +240,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .banner-warn { background: color-mix(in srgb, var(--amber) 14%, var(--surface)); color: var(--amber); }
 .banner-ended { background: var(--surface-2); color: var(--text); }
 
-.term-stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.term-stage { flex: 1; min-height: 120px; position: relative; display: flex; flex-direction: column; }
 .term-area {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--term-bg);
   scrollbar-gutter: stable;
@@ -285,8 +286,17 @@ button, input, textarea { font: inherit; color: inherit; }
   font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden;
   cursor: pointer; touch-action: manipulation;
 }
+.key { position: relative; }
 .key:active, .key.busy { background: var(--surface-2); border-color: var(--muted); }
 .key:disabled { opacity: .4; cursor: default; }
+/* Esc: outlined, not filled, so it doesn't read as one of the answer keys. */
+.key.key-esc { background: transparent; border: 2px solid var(--muted); }
+/* A brief tick after a key reached the terminal. */
+.key.ok { border-color: var(--green); }
+.key.ok::after {
+  content: "✓"; position: absolute; top: 1px; right: 4px;
+  font-size: 11px; line-height: 1; color: var(--green);
+}
 
 .reply { display: flex; gap: 8px; align-items: flex-end; }
 .reply textarea {
@@ -294,9 +304,11 @@ button, input, textarea { font: inherit; color: inherit; }
   padding: 10px 12px; line-height: 1.4;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
 }
-.reply textarea:disabled { opacity: .5; }
+.reply textarea:read-only { opacity: .6; }
+/* A fixed width: the label changes (Send, Type into dialog, Tap again to type, Sending…, Sent ✓)
+   but the button never moves under the finger. */
 .reply .send {
-  flex: none; min-height: var(--tap); padding: 0 18px;
+  flex: none; min-height: var(--tap); min-width: 9.5em; padding: 0 10px; white-space: nowrap;
   border: 0; border-radius: var(--radius); background: var(--blue); color: #0b1620; font-weight: 700; cursor: pointer;
 }
 .reply .send:disabled { opacity: .5; cursor: default; }
@@ -305,7 +317,21 @@ button, input, textarea { font: inherit; color: inherit; }
   background: var(--red);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 45%, transparent);
 }
-.reply-hint { margin: 0; padding: 0 4px; font-size: 13px; line-height: 1.35; color: var(--amber); }
+.reply-hint { margin: 0; padding: 0 4px; font-size: 13px; line-height: 1.35; color: var(--amber); overflow-wrap: anywhere; }
+
+/* Answering (reply box focused) and short screens (landscape, keyboard up): keep the terminal
+   as big as possible. The header keeps its name + status row; details, tab/address and the
+   zoom row fold away; the hint takes one line. */
+.view-term.answering .head-details, .view-term.answering .head-body .row-meta, .view-term.answering .zoom-row { display: none; }
+.view-term.answering .reply-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-height: 500px) {
+  .view-term .head-details, .view-term .head-body .row-meta, .view-term .zoom-row { display: none; }
+  .view-term .reply-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+/* Wide and short (a phone in landscape): the key bar is one row of twelve. */
+@media (max-height: 500px) and (min-width: 640px) {
+  .keybar { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+}
 
 /* ---------- settings sheet ---------- */
 

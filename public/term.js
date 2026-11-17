@@ -7,18 +7,24 @@ import {
   MIN_ZOOM, MAX_ZOOM, effectiveScale, zoomIn, zoomOut, zoomLabel, zoomAriaLabel,
   pinchStep, anchoredScroll, wheelScale, readZoomPref, saveZoomPref,
 } from './zoom.js';
-import { splitPan, snapCarry, releaseVelocity, flingStep, FRAME_MS, FLING_STOP, VELOCITY_WINDOW_MS } from './scroll.js';
+import {
+  splitPan, snapCarry, releaseVelocity, flingStep, latestVisible,
+  FRAME_MS, FLING_STOP, FLING_DECAY, FLING_DECAY_REDUCED, VELOCITY_WINDOW_MS,
+} from './scroll.js';
+import { createDialogConfirm } from './dialog.js';
 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
 const SCROLLBACK = 2000; // xterm keeps history + what arrives live
 const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
-const CONFIRM_MS = 2000; // a dialog send needs a second tap within this window
-const DIALOG_HINT = 'Pick the dialog’s “Type something” option with its number key first, then type here.';
+const KEY_OK_MS = 700; // a key button shows its tick this long after a successful press
+const ENDED_HINT = 'Session ended — your text is kept.';
 
+// [label, hc key name, aria-label, extra class]. Two rows of six; Esc sits at the edge.
 const KEYS = [
-  ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
-  ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
+  ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'],
+  ['Enter', 'enter'], ['Tab', 'tab'], ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
+  ['Esc', 'esc', 'Escape', 'key-esc'],
 ];
 
 const THEME = {
@@ -236,10 +242,12 @@ export function openTermView({ root, address, item }) {
       if (r.lines) term.scrollLines(r.lines); // scrolling up keeps xterm from following new output
       moved = moved || Math.abs(r.rest) < Math.abs(dy);
     }
+    updateLatest();
     return moved;
   }
 
-  // Fling: keeps panning after a quick swipe, slowing down each frame.
+  // Fling: keeps panning after a quick swipe, slowing down each frame (sooner with reduced motion).
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   let fling = null; // { vx, vy, t } in px per frame
   let flingFrame = 0;
   function stopFling() {
@@ -260,8 +268,9 @@ export function openTermView({ root, address, item }) {
     fling.t = now;
     const k = dt / FRAME_MS;
     const moved = panBy(fling.vx * k, fling.vy * k);
-    fling.vx = flingStep(fling.vx, dt);
-    fling.vy = flingStep(fling.vy, dt);
+    const decay = reducedMotion?.matches ? FLING_DECAY_REDUCED : FLING_DECAY;
+    fling.vx = flingStep(fling.vx, dt, decay);
+    fling.vy = flingStep(fling.vy, dt, decay);
     if (!moved || (!fling.vx && !fling.vy)) return stopFling();
     flingFrame = requestAnimationFrame(flingTick);
   }
@@ -290,7 +299,9 @@ export function openTermView({ root, address, item }) {
 
   // Touch: .term-area has touch-action: none, so we own every gesture on it (no native
   // scroll, no page zoom, no pull-to-refresh). One finger pans + flings; two fingers pinch,
-  // following two specific touches by identifier.
+  // following two specific touches by identifier. Only touches that started on the terminal
+  // count: a thumb resting on the key bar or reply box never joins a pinch.
+  const areaTouches = (list) => [...list].filter((t) => t.target instanceof Node && area.contains(t.target));
   let pan = null; // { id, x, y, samples: [{ t, x, y }] }
   function startPan(t) {
     const now = performance.now();
@@ -325,13 +336,14 @@ export function openTermView({ root, address, item }) {
   area.addEventListener('touchstart', (ev) => {
     ev.stopPropagation();
     stopFling(); // any new touch stops a fling
-    if (ev.touches.length >= 2) {
+    const touches = areaTouches(ev.touches);
+    if (touches.length >= 2) {
       if (ev.cancelable) ev.preventDefault();
       pan = null;
-      if (pinch && pinchPair(ev.touches)) return; // an extra finger: keep following the pair
-      startPinch(ev.touches);
-    } else if (!pinch) {
-      startPan(ev.touches[0]);
+      if (pinch && pinchPair(touches)) return; // an extra finger: keep following the pair
+      startPinch(touches);
+    } else if (!pinch && touches.length === 1) {
+      startPan(touches[0]);
     }
   }, { capture: true, passive: false });
   area.addEventListener('touchmove', (ev) => {
@@ -358,10 +370,11 @@ export function openTermView({ root, address, item }) {
   // Window, capture phase: sees every lift, even though the area stops propagation.
   const onTouchEnd = (ev) => {
     if (pinch) {
-      if (pinchPair(ev.touches)) return;
-      if (ev.touches.length >= 2) { startPinch(ev.touches); return; } // 3 → 2 fingers: re-base
+      const touches = areaTouches(ev.touches);
+      if (pinchPair(touches)) return;
+      if (touches.length >= 2) { startPinch(touches); return; } // 3 → 2 fingers: re-base
       endPinch();
-      if (ev.touches.length === 1) startPan(ev.touches[0]); // the remaining finger keeps panning
+      if (touches.length === 1) startPan(touches[0]); // the remaining finger keeps panning
       return;
     }
     if (!pan || findTouch(ev.touches, pan.id)) return;
@@ -377,8 +390,12 @@ export function openTermView({ root, address, item }) {
     el('span', { 'aria-hidden': 'true', text: '↓ Latest' }));
   function updateLatest() {
     const b = term?.buffer.active;
-    latestBtn.hidden = !b || b.viewportY >= b.baseY;
+    latestBtn.hidden = !b || !latestVisible({
+      viewportY: b.viewportY, baseY: b.baseY,
+      scrollTop: area.scrollTop, scrollHeight: area.scrollHeight, clientHeight: area.clientHeight,
+    });
   }
+  area.addEventListener('scroll', () => updateLatest(), { passive: true });
   latestBtn.addEventListener('click', () => {
     stopFling();
     resetCarries();
@@ -399,6 +416,11 @@ export function openTermView({ root, address, item }) {
         theme: THEME,
       });
       term.open(host);
+      // xterm focuses its hidden textarea on a tap: never let that raise the on-screen keyboard.
+      if (term.textarea) {
+        term.textarea.setAttribute('inputmode', 'none');
+        term.textarea.tabIndex = -1;
+      }
       resizeObserver.observe(term.element);
       // While scrolled up, xterm keeps the position as output arrives; only the button changes.
       term.onScroll(updateLatest);
@@ -494,112 +516,146 @@ export function openTermView({ root, address, item }) {
     return `Something went wrong (HTTP ${r.status}).`;
   }
 
+  // Tapping a key or Send must not move focus out of the reply box: the keyboard stays up.
+  const keepFocus = (ev) => ev.preventDefault();
+
   // ---- key bar ----
-  const keyButtons = KEYS.map(([label, key, aria]) => {
-    const b = el('button', { type: 'button', class: 'key', 'aria-label': aria ?? null, text: label });
+  const keyButtons = KEYS.map(([label, key, aria, extra]) => {
+    const b = el('button', { type: 'button', class: extra ? `key ${extra}` : 'key', 'aria-label': aria ?? null, text: label });
     b.dataset.key = key;
     return b;
   });
+  const okTimers = new Map();
   async function sendKey(key, button) {
+    confirmDispatch({ type: 'key' }); // a key press changes what the dialog shows: disarm
     clearError();
+    clearTimeout(okTimers.get(button));
+    button.classList.remove('ok');
     button.classList.add('busy');
     const r = await api(terminalPath(address, 'keys'), { method: 'POST', body: { keys: [key] } });
     button.classList.remove('busy');
-    if (!r.ok && r.status !== 401) showError(describeFailure(r));
+    if (closed) return;
+    if (r.ok) {
+      button.classList.add('ok');
+      okTimers.set(button, setTimeout(() => button.classList.remove('ok'), KEY_OK_MS));
+    } else if (r.status !== 401) showError(describeFailure(r));
   }
 
+  // A key-bar touch that is part of a multi-finger gesture (e.g. a pinch at the bottom edge
+  // with a finger landing on the key bar) never sends a key.
+  let keyTouch = null; // { multi } for the latest key-bar touch
+  const onAnyTouchStart = (ev) => { if (keyTouch && ev.touches.length > 1) keyTouch.multi = true; };
+  window.addEventListener('touchstart', onAnyTouchStart, true);
+
   const keybar = el('div', { class: 'keybar', role: 'group', 'aria-label': 'Keys' }, keyButtons);
+  keybar.addEventListener('pointerdown', keepFocus);
+  keybar.addEventListener('mousedown', keepFocus);
+  keybar.addEventListener('touchstart', (ev) => { keyTouch = { multi: ev.touches.length > 1 }; }, { passive: true });
   keybar.addEventListener('click', (ev) => {
+    const multi = keyTouch?.multi;
+    keyTouch = null;
     const b = ev.target.closest('button.key');
-    if (!b || b.disabled) return;
-    const key = b.dataset.key;
-    sendKey(key, b);
+    if (!b || b.disabled || multi) return;
+    sendKey(b.dataset.key, b);
   });
 
   // ---- reply box ----
-  // While the terminal shows a dialog (status 'blocked'), hc only types into it with --force.
-  // That is "dialog mode": the first tap (or Ctrl/⌘+Enter) arms, a second one within
-  // CONFIRM_MS sends with force: true. Otherwise Send behaves as a plain send.
+  // The Send logic, including the two-tap confirm for typing into a dialog, lives in dialog.js.
   const textarea = el('textarea', {
     rows: '1', placeholder: 'Reply to the agent', 'aria-label': 'Reply text', enterkeyhint: 'enter', maxlength: '4000',
     'aria-describedby': 'reply-hint',
   });
   const sendBtn = el('button', { type: 'submit', class: 'send', text: 'Send' });
+  sendBtn.addEventListener('pointerdown', keepFocus);
+  sendBtn.addEventListener('mousedown', keepFocus);
   const form = el('form', { class: 'reply' }, textarea, sendBtn);
-  const replyHint = el('p', { class: 'reply-hint', id: 'reply-hint', text: DIALOG_HINT, hidden: true });
+  const replyHint = el('p', { class: 'reply-hint', id: 'reply-hint', hidden: true });
+  const liveRegion = el('p', { class: 'visually-hidden', role: 'status', 'aria-live': 'polite' });
 
-  let sending = false;
-  let armed = false;
-  let armTimer = null;
-  let refusedAsDialog = false; // a plain send got a 409: treat as a dialog until the status changes
-  const dialogMode = () => current?.status === 'blocked' || refusedAsDialog;
+  const confirm = createDialogConfirm({ item, now: () => performance.now() });
+  let controlsOn = true;
+  let wakeTimer = null;
 
   function renderSend() {
-    const dialog = dialogMode();
-    sendBtn.textContent = sending ? 'Sending…' : armed ? 'Tap again to type' : dialog ? 'Type into dialog' : 'Send';
-    sendBtn.classList.toggle('dialog', dialog);
-    sendBtn.classList.toggle('armed', armed);
-    replyHint.hidden = !dialog || gone || ended;
+    const engaged = document.activeElement === textarea || textarea.value.length > 0;
+    const v = confirm.view({ engaged });
+    sendBtn.textContent = v.label;
+    sendBtn.classList.toggle('dialog', v.dialog);
+    sendBtn.classList.toggle('armed', v.armed);
+    sendBtn.disabled = !controlsOn || v.disabled;
+    const hint = controlsOn ? v.hint : ENDED_HINT;
+    replyHint.textContent = hint ?? '';
+    replyHint.hidden = !hint;
+    const live = controlsOn ? v.live : '';
+    if (liveRegion.textContent !== live) liveRegion.textContent = live;
+    // One timer for whatever the confirm waits on next (window end, closed-dialog guard, "Sent ✓").
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
+    const at = confirm.nextWake();
+    if (at !== null && !closed) {
+      wakeTimer = setTimeout(() => confirmDispatch({ type: 'tick' }), Math.max(0, at - performance.now()) + 5);
+    }
   }
-  function disarm() {
-    clearTimeout(armTimer);
-    armTimer = null;
-    if (!armed) return;
-    armed = false;
+  function confirmDispatch(ev) {
+    const effect = confirm.dispatch(ev);
     renderSend();
-  }
-  function arm() {
-    armed = true;
-    clearTimeout(armTimer);
-    armTimer = setTimeout(disarm, CONFIRM_MS);
-    renderSend();
+    return effect;
   }
 
   const grow = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
   };
-  textarea.addEventListener('input', () => { disarm(); grow(); });
-  textarea.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); form.requestSubmit(); }
-  });
-  form.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
+  textarea.addEventListener('input', () => { grow(); confirmDispatch({ type: 'input' }); });
+  // "Answering" layout while the reply box has focus: header details and the zoom row fold away.
+  const setAnswering = (on) => { view.classList.toggle('answering', on); renderSend(); };
+  textarea.addEventListener('focus', () => setAnswering(true));
+  textarea.addEventListener('blur', () => setAnswering(false));
+
+  async function submit({ repeat = false } = {}) {
+    if (!controlsOn) return;
     const text = textarea.value;
-    if (!text.trim() || sendBtn.disabled) return;
-    const force = dialogMode();
-    if (force && !armed) { arm(); return; }
-    disarm();
+    const effect = confirmDispatch({ type: 'submit', repeat, hasText: Boolean(text.trim()) });
+    if (effect?.type !== 'send') return;
     clearError();
-    sending = true;
-    sendBtn.disabled = true;
-    renderSend();
-    const body = force ? { text, force: true } : { text };
+    const body = effect.force ? { text, force: true, expect: effect.expect } : { text };
     const r = await api(terminalPath(address, 'send'), { method: 'POST', body });
-    sending = false;
-    sendBtn.disabled = ended || gone;
-    if (r.ok) {
-      if (textarea.value === text) textarea.value = '';
+    if (closed) return;
+    if (r.ok && textarea.value === text) {
+      textarea.value = '';
       grow();
-    } else if (r.status !== 401) {
-      // A plain send refused with 409: the terminal most likely just opened a dialog.
-      if (r.status === 409 && !force) refusedAsDialog = true;
-      showError(describeFailure(r), r.status === 409 && !force ? 'The terminal is showing a dialog.' : null);
     }
-    renderSend();
+    const result = confirmDispatch({
+      type: 'result', ok: r.ok, status: r.status, error: r.data?.error, kind: r.data?.kind, force: effect.force,
+    });
+    if (!r.ok && r.status !== 401 && result?.type !== 'notice') showError(describeFailure(r));
+  }
+  textarea.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      submit({ repeat: ev.repeat }); // a held Ctrl+Enter never confirms
+    }
+  });
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    submit();
   });
 
+  // Session ended or gone: keys and Send off; the text stays (read-only) so it can be copied.
   function setControlsEnabled(on) {
+    controlsOn = on;
     for (const b of keyButtons) b.disabled = !on;
-    sendBtn.disabled = !on;
-    textarea.disabled = !on;
-    if (!on) disarm();
+    textarea.readOnly = !on;
+    if (!on) confirm.dispatch({ type: 'disarm' });
     renderSend();
   }
 
   const view = el('section', { class: 'view view-term' },
     header, banner, zoomRow, stage,
-    el('div', { class: 'controls' }, feedback, keybar, form, replyHint));
+    el('div', { class: 'controls' }, feedback, keybar, form, replyHint, liveRegion));
+
+  // Pull-to-refresh is off only while the live view is shown (the list keeps it).
+  document.documentElement.classList.add('live-view');
 
   renderHeader();
   renderZoom();
@@ -610,20 +666,21 @@ export function openTermView({ root, address, item }) {
   return {
     address,
     update(next) {
-      const before = gone ? null : current?.status;
       if (next) { current = next; gone = socketSaidGone; } else gone = true;
-      const after = gone ? null : current?.status;
-      if (after !== before) { refusedAsDialog = false; disarm(); }
+      confirm.dispatch({ type: 'item', item: gone ? null : current });
       renderHeader();
-      renderSend();
+      setControlsEnabled(!gone && !ended);
     },
     close() {
       closed = true;
+      document.documentElement.classList.remove('live-view');
       clearTimeout(reconnectTimer);
-      clearTimeout(armTimer);
+      clearTimeout(wakeTimer);
+      for (const t of okTimers.values()) clearTimeout(t);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('touchend', onTouchEnd, true);
       window.removeEventListener('touchcancel', onTouchEnd, true);
+      window.removeEventListener('touchstart', onAnyTouchStart, true);
       stopFling();
       if (pinch) endPinch(); // flushes and saves a pinch still in progress
       if (saveTimer) { clearTimeout(saveTimer); flushFrame(); saveZoom(); }
