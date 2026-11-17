@@ -13,6 +13,8 @@ const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 1000; // lines of scrollback replayed on connect (server clamps to 0..2000)
 const SCROLLBACK = 2000; // xterm keeps history + what arrives live
 const WHEEL_SAVE_MS = 300; // Ctrl+wheel zoom is saved once the wheel goes quiet
+const CONFIRM_MS = 2000; // a dialog send needs a second tap within this window
+const DIALOG_HINT = 'Pick the dialog’s “Type something” option with its number key first, then type here.';
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
@@ -515,15 +517,49 @@ export function openTermView({ root, address, item }) {
   });
 
   // ---- reply box ----
-  const textarea = el('textarea', { rows: '1', placeholder: 'Reply to the agent', 'aria-label': 'Reply text', enterkeyhint: 'enter', maxlength: '4000' });
+  // While the terminal shows a dialog (status 'blocked'), hc only types into it with --force.
+  // That is "dialog mode": the first tap (or Ctrl/⌘+Enter) arms, a second one within
+  // CONFIRM_MS sends with force: true. Otherwise Send behaves as a plain send.
+  const textarea = el('textarea', {
+    rows: '1', placeholder: 'Reply to the agent', 'aria-label': 'Reply text', enterkeyhint: 'enter', maxlength: '4000',
+    'aria-describedby': 'reply-hint',
+  });
   const sendBtn = el('button', { type: 'submit', class: 'send', text: 'Send' });
   const form = el('form', { class: 'reply' }, textarea, sendBtn);
+  const replyHint = el('p', { class: 'reply-hint', id: 'reply-hint', text: DIALOG_HINT, hidden: true });
+
+  let sending = false;
+  let armed = false;
+  let armTimer = null;
+  let refusedAsDialog = false; // a plain send got a 409: treat as a dialog until the status changes
+  const dialogMode = () => current?.status === 'blocked' || refusedAsDialog;
+
+  function renderSend() {
+    const dialog = dialogMode();
+    sendBtn.textContent = sending ? 'Sending…' : armed ? 'Tap again to type' : dialog ? 'Type into dialog' : 'Send';
+    sendBtn.classList.toggle('dialog', dialog);
+    sendBtn.classList.toggle('armed', armed);
+    replyHint.hidden = !dialog || gone || ended;
+  }
+  function disarm() {
+    clearTimeout(armTimer);
+    armTimer = null;
+    if (!armed) return;
+    armed = false;
+    renderSend();
+  }
+  function arm() {
+    armed = true;
+    clearTimeout(armTimer);
+    armTimer = setTimeout(disarm, CONFIRM_MS);
+    renderSend();
+  }
 
   const grow = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
   };
-  textarea.addEventListener('input', grow);
+  textarea.addEventListener('input', () => { disarm(); grow(); });
   textarea.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); form.requestSubmit(); }
   });
@@ -531,44 +567,60 @@ export function openTermView({ root, address, item }) {
     ev.preventDefault();
     const text = textarea.value;
     if (!text.trim() || sendBtn.disabled) return;
+    const force = dialogMode();
+    if (force && !armed) { arm(); return; }
+    disarm();
     clearError();
+    sending = true;
     sendBtn.disabled = true;
-    sendBtn.textContent = 'Sending…';
-    const r = await api(terminalPath(address, 'send'), { method: 'POST', body: { text } });
-    sendBtn.disabled = ended;
-    sendBtn.textContent = 'Send';
+    renderSend();
+    const body = force ? { text, force: true } : { text };
+    const r = await api(terminalPath(address, 'send'), { method: 'POST', body });
+    sending = false;
+    sendBtn.disabled = ended || gone;
     if (r.ok) {
       if (textarea.value === text) textarea.value = '';
       grow();
     } else if (r.status !== 401) {
-      showError(describeFailure(r), r.status === 409 ? 'Answer the dialog with the keys above.' : null);
+      // A plain send refused with 409: the terminal most likely just opened a dialog.
+      if (r.status === 409 && !force) refusedAsDialog = true;
+      showError(describeFailure(r), r.status === 409 && !force ? 'The terminal is showing a dialog.' : null);
     }
+    renderSend();
   });
 
   function setControlsEnabled(on) {
     for (const b of keyButtons) b.disabled = !on;
     sendBtn.disabled = !on;
     textarea.disabled = !on;
+    if (!on) disarm();
+    renderSend();
   }
 
   const view = el('section', { class: 'view view-term' },
     header, banner, zoomRow, stage,
-    el('div', { class: 'controls' }, feedback, keybar, form));
+    el('div', { class: 'controls' }, feedback, keybar, form, replyHint));
 
   renderHeader();
   renderZoom();
+  renderSend();
   root.replaceChildren(view);
   connect();
 
   return {
     address,
     update(next) {
+      const before = gone ? null : current?.status;
       if (next) { current = next; gone = socketSaidGone; } else gone = true;
+      const after = gone ? null : current?.status;
+      if (after !== before) { refusedAsDialog = false; disarm(); }
       renderHeader();
+      renderSend();
     },
     close() {
       closed = true;
       clearTimeout(reconnectTimer);
+      clearTimeout(armTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('touchend', onTouchEnd, true);
       window.removeEventListener('touchcancel', onTouchEnd, true);

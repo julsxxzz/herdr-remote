@@ -9,6 +9,10 @@ Owner checks that cannot be automated. Record results in the "Tested" line of th
 - [ ] Let a Claude Code session finish a turn with the phone locked; the "finished" push arrives.
 - [ ] Tap the push; it opens that session's live view.
 - [ ] Send a reply from the phone; it appears on the PC within about 1 s.
+- [ ] Make Claude Code ask a question with options (e.g. "Use the AskUserQuestion tool to ask me which colour I prefer, with options Red and Blue."). When the session shows as needing you, the Send button reads `Type into dialog` and the hint about "Type something" shows under the reply box.
+- [ ] Press the "Type something" option's number on the key bar, type an answer, tap `Type into dialog`: it turns to a highlighted `Tap again to type` and nothing is sent. Wait 2 s: it goes back. Tap twice: the answer reaches Claude Code.
+- [ ] While armed, edit the text: it disarms. In a session that isn't showing a dialog, Send sends on the first tap as before.
+- [ ] A permission prompt that shows as blocked also gets `Type into dialog` with the same two-tap confirm.
 - [ ] Turn desk mode on; no push arrives.
 - [ ] Open a wide terminal (about 200 columns): fits at half size and pans; zooming in and landscape both help.
 - [ ] On that wide terminal, pinch out and in with two fingers: text zooms around your fingers (25% to 200%), the page itself never zooms, and one finger still scrolls and pans.
