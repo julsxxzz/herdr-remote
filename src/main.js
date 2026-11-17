@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, loadState, saveState, validateConfig } from './config.js';
 import { createHc } from './hc.js';
@@ -10,6 +12,12 @@ import { createPush } from './push.js';
 import { createNotifier } from './notifier.js';
 
 const repo = new URL('..', import.meta.url);
+// The installed @xterm/xterm folder, found the way Node finds the package: it may be hoisted out of
+// this package's own node_modules (global install, npx cache), so no fixed path under the repo.
+export function xtermDir({ resolve = createRequire(import.meta.url).resolve } = {}) {
+  return path.dirname(resolve('@xterm/xterm/package.json'));
+}
+
 const FALLBACK_SUBJECT = 'mailto:remote-for-herdr@example.invalid';
 
 export async function startServer({ home, log = console, hcOverride, webpushOverride } = {}) {
@@ -39,7 +47,7 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
   const server = createServer({
     config: cfg, state, saveState: save, hc, store, sessions, limiter, push,
     publicDir: fileURLToPath(new URL('public', repo)),
-    vendorDir: fileURLToPath(new URL('node_modules/@xterm/xterm', repo)),
+    vendorDir: xtermDir(),
     log: logWarn,
     onSettingsChanged: () => live?.broadcastList(), // R10
     onLogoutEverywhere: () => live?.disconnectAll(), // R11

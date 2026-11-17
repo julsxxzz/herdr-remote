@@ -8,7 +8,7 @@ import net from 'node:net';
 import { spawn, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { startServer } from '../src/main.js';
+import { startServer, xtermDir } from '../src/main.js';
 import { createHc } from '../src/hc.js';
 import { hashPin } from '../src/auth.js';
 import { generateVapidKeys } from '../src/push.js';
@@ -314,4 +314,21 @@ test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', 
   } finally {
     child.kill();
   }
+});
+
+test('npm: the vendor xterm files are served from wherever Node resolves @xterm/xterm', async () => {
+  await boot();
+  const js = await req('GET', '/vendor/xterm.js');
+  assert.equal(js.status, 200);
+  assert.equal(js.text, fs.readFileSync(path.join(xtermDir(), 'lib', 'xterm.js'), 'utf8'));
+  assert.equal((await req('GET', '/vendor/xterm.css')).status, 200);
+});
+
+test('npm: xtermDir is the folder of the resolved package.json (works when the dependency is hoisted)', () => {
+  const hoisted = path.join(os.tmpdir(), 'npm', 'node_modules', '@xterm', 'xterm');
+  const asked = [];
+  assert.equal(xtermDir({ resolve: (id) => { asked.push(id); return path.join(hoisted, 'package.json'); } }), hoisted);
+  assert.deepEqual(asked, ['@xterm/xterm/package.json']);
+  assert.ok(fs.existsSync(path.join(xtermDir(), 'lib', 'xterm.js')));
+  assert.ok(fs.existsSync(path.join(xtermDir(), 'css', 'xterm.css')));
 });
