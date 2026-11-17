@@ -6,14 +6,12 @@ import { el, statusIcon, statusKey, STATUS_LABEL, itemName, itemDetails } from '
 
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 200;
-const CTRL_C_WINDOW_MS = 2000;
 // Fit never shrinks text below this; a wider terminal pans horizontally instead (ruling R14).
 const MIN_FIT_SCALE = 0.5;
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
   ['⇧Tab', 'shift+tab', 'Shift+Tab'], ['↑', 'up', 'Up'], ['↓', 'down', 'Down'], ['←', 'left', 'Left'], ['→', 'right', 'Right'],
-  ['Ctrl+C', 'ctrl+c'],
 ];
 
 const THEME = {
@@ -222,20 +220,11 @@ export function openTermView({ root, address, item }) {
   }
 
   // ---- key bar ----
-  let ctrlCTimer = null;
   const keyButtons = KEYS.map(([label, key, aria]) => {
-    const b = el('button', { type: 'button', class: `key${key === 'ctrl+c' ? ' key-danger' : ''}`, 'aria-label': aria ?? null, text: label });
+    const b = el('button', { type: 'button', class: 'key', 'aria-label': aria ?? null, text: label });
     b.dataset.key = key;
     return b;
   });
-  const ctrlC = keyButtons.find((b) => b.dataset.key === 'ctrl+c');
-
-  function disarmCtrlC() {
-    clearTimeout(ctrlCTimer);
-    ctrlCTimer = null;
-    ctrlC.classList.remove('armed');
-    ctrlC.textContent = 'Ctrl+C';
-  }
 
   async function sendKey(key, button) {
     clearError();
@@ -249,17 +238,7 @@ export function openTermView({ root, address, item }) {
   keybar.addEventListener('click', (ev) => {
     const b = ev.target.closest('button.key');
     if (!b || b.disabled) return;
-    const key = b.dataset.key;
-    if (key === 'ctrl+c') {
-      if (!ctrlCTimer) {
-        ctrlC.classList.add('armed');
-        ctrlC.textContent = 'Tap again';
-        ctrlCTimer = setTimeout(disarmCtrlC, CTRL_C_WINDOW_MS);
-        return;
-      }
-      disarmCtrlC();
-    }
-    sendKey(key, b);
+    sendKey(b.dataset.key, b);
   });
 
   // ---- reply box ----
@@ -297,7 +276,6 @@ export function openTermView({ root, address, item }) {
     for (const b of keyButtons) b.disabled = !on;
     sendBtn.disabled = !on;
     textarea.disabled = !on;
-    if (!on) disarmCtrlC();
   }
 
   const view = el('section', { class: 'view view-term' },
@@ -318,7 +296,6 @@ export function openTermView({ root, address, item }) {
     close() {
       closed = true;
       clearTimeout(reconnectTimer);
-      disarmCtrlC();
       document.removeEventListener('visibilitychange', onVisibility);
       resizeObserver.disconnect();
       const sock = ws;
