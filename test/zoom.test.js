@@ -62,11 +62,11 @@ test('zoomIn/zoomOut step by 1.25 from the current scale, clamped, and switch to
   assert.equal(zoomIn(zoomIn(zoomOut(zoomOut(1).zoom).zoom).zoom).zoom, 1);
 });
 
-test('zoomLabel shows Fit or a whole percentage', () => {
+test('zoomLabel shows Fit, or a whole percentage with a Fit reminder', () => {
   assert.equal(zoomLabel({ mode: 'fit', zoom: 1 }), 'Fit');
-  assert.equal(zoomLabel({ mode: 'manual', zoom: 0.85 }), '85%');
-  assert.equal(zoomLabel({ mode: 'manual', zoom: 0.625 }), '63%');
-  assert.equal(zoomLabel({ mode: 'manual', zoom: 2 }), '200%');
+  assert.equal(zoomLabel({ mode: 'manual', zoom: 0.85 }), '85% · Fit');
+  assert.equal(zoomLabel({ mode: 'manual', zoom: 0.625 }), '63% · Fit');
+  assert.equal(zoomLabel({ mode: 'manual', zoom: 2 }), '200% · Fit');
 });
 
 test('pinchScale scales by the finger-distance ratio, clamped', () => {
@@ -242,3 +242,22 @@ test('migration still returns the migrated value when removeItem throws', () => 
   assert.deepEqual(readZoomPref(s), { mode: 'manual', zoom: 1 });
   assert.deepEqual(JSON.parse(s.data.get('hr.zoom')), { mode: 'manual', zoom: 1 });
 });
+
+test('C2: gestures from a Fit scale above MAX_ZOOM start from MAX_ZOOM', () => {
+  // − from a 300% fit steps down from 200%, not to 200%
+  assert.deepEqual(zoomOut(3), { mode: 'manual', zoom: tidyStep(MAX_ZOOM / ZOOM_STEP) });
+  // a pinch-in at 300% fit continues from 200%, a pinch-out stays at the max
+  const prev = { dist: 100, x: 50, y: 50 };
+  near(pinchStep({ scale: 3, scrollLeft: 0, scrollTop: 0, prev, next: { dist: 90, x: 50, y: 50 } }).scale, MAX_ZOOM * 0.9);
+  assert.equal(pinchStep({ scale: 3, scrollLeft: 0, scrollTop: 0, prev, next: { dist: 110, x: 50, y: 50 } }).scale, MAX_ZOOM);
+  // the content under the fingers is still anchored from the real starting scale
+  const st = pinchStep({ scale: 3, scrollLeft: 300, scrollTop: 0, prev, next: { dist: 90, x: 50, y: 50 } });
+  near(st.scrollLeft, (300 + 50) * (MAX_ZOOM * 0.9 / 3) - 50);
+  // Ctrl+wheel out from 300% fit
+  near(wheelScale(3, 300), MAX_ZOOM / 2);
+  assert.equal(wheelScale(3, -300), MAX_ZOOM);
+  // ordinary scales are unchanged
+  near(pinchScale(1.5, 100, 90), 1.35);
+});
+
+const tidyStep = (n) => Math.round(n * 1e6) / 1e6;

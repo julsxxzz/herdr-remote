@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitPan, releaseVelocity, flingStep, FLING_DECAY, FLING_STOP, FRAME_MS, MAX_VELOCITY, snapCarry } from '../public/scroll.js';
+import {
+  splitPan, releaseVelocity, flingStep, FLING_DECAY, FLING_DECAY_REDUCED, FLING_STOP, FRAME_MS, MAX_VELOCITY, snapCarry, latestVisible,
+} from '../public/scroll.js';
 
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} !~ ${b}`);
 const base = { maxScrollTop: 200, linesAbove: 50, linesBelow: 0, lineHeight: 20, carry: 0 };
@@ -116,4 +118,47 @@ test('flingStep decays and stops under the threshold', () => {
   let frames = 0;
   while (v) { v = flingStep(v); frames++; }
   assert.ok(frames > 10 && frames < 200, `${frames} frames`);
+});
+
+test('C1: splitPan drops the carry when the pan reverses (no dead zone)', () => {
+  // 10 px carried from scrolling up; a 5 px move down must move 5 px down, not cancel out
+  const down = splitPan({ ...base, delta: 5, scrollTop: 0, linesAbove: 40, linesBelow: 10, carry: -10 });
+  assert.equal(down.lines, 0);
+  near(down.carry, 5);
+  const down2 = splitPan({ ...base, delta: 15, scrollTop: 0, linesAbove: 40, linesBelow: 10, carry: down.carry });
+  assert.equal(down2.lines, 1);
+  // and the other way round
+  const up = splitPan({ ...base, delta: -5, scrollTop: 0, linesAbove: 40, linesBelow: 10, carry: 15 });
+  near(up.carry, -5);
+  // same direction keeps accumulating
+  near(splitPan({ ...base, delta: -5, scrollTop: 0, carry: -10 }).carry, -15);
+});
+
+test('splitPan: with nothing to scroll the whole delta comes back unused', () => {
+  const flat = { maxScrollTop: 0, linesAbove: 0, linesBelow: 0, lineHeight: 20, carry: 0, scrollTop: 0 };
+  assert.deepEqual(splitPan({ ...flat, delta: -30 }), { scrollTop: 0, lines: 0, carry: 0, rest: -30 });
+  assert.deepEqual(splitPan({ ...flat, delta: 30 }), { scrollTop: 0, lines: 0, carry: 0, rest: 30 });
+});
+
+test('flingStep with dt <= 0 (or junk) neither moves nor grows', () => {
+  assert.equal(flingStep(10, 0), 10);
+  assert.equal(flingStep(10, -50), 10);
+  assert.equal(flingStep(-10, -1e6), -10);
+  assert.equal(flingStep(10, NaN), 10);
+});
+
+test('B10: reduced motion decays faster', () => {
+  assert.ok(FLING_DECAY_REDUCED < FLING_DECAY);
+  near(flingStep(10, FRAME_MS, FLING_DECAY_REDUCED), 10 * FLING_DECAY_REDUCED);
+  const frames = (decay) => { let v = 40; let n = 0; while (v) { v = flingStep(v, FRAME_MS, decay); n++; } return n; };
+  assert.ok(frames(FLING_DECAY_REDUCED) < frames(FLING_DECAY) / 2);
+});
+
+test('B8: latestVisible when xterm is in its history or the area is scrolled up', () => {
+  const atEnd = { viewportY: 100, baseY: 100, scrollTop: 600, scrollHeight: 1000, clientHeight: 400 };
+  assert.equal(latestVisible(atEnd), false);
+  assert.equal(latestVisible({ ...atEnd, viewportY: 90 }), true);
+  assert.equal(latestVisible({ ...atEnd, scrollTop: 300 }), true); // zoomed in, area scrolled up
+  assert.equal(latestVisible({ ...atEnd, scrollTop: 599.5 }), false); // sub-pixel short of the end
+  assert.equal(latestVisible({ ...atEnd, scrollHeight: 400, scrollTop: 0 }), false); // nothing to scroll
 });

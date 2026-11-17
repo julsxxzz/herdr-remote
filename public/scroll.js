@@ -4,6 +4,7 @@
 
 export const FRAME_MS = 1000 / 60;
 export const FLING_DECAY = 0.95; // velocity kept per 60 Hz frame
+export const FLING_DECAY_REDUCED = 0.8; // prefers-reduced-motion: a short glide
 export const FLING_STOP = 0.5; // px per frame
 export const VELOCITY_WINDOW_MS = 100;
 export const MAX_VELOCITY = 6; // px/ms: a hard flick; bursty or coalesced events can't exceed it
@@ -21,6 +22,8 @@ export function splitPan({ delta, scrollTop, maxScrollTop, linesAbove, linesBelo
   let lines = 0;
   let c = 0;
   const lh = lineHeight > 0 ? lineHeight : 0;
+  // A carry left over from the other direction would swallow the first px of a reversal.
+  if (carry * delta < 0) carry = 0;
 
   if (rem < 0) {
     // Up: the area's scroll first, then into the scrollback.
@@ -84,7 +87,15 @@ export function releaseVelocity(samples, now, windowMs = VELOCITY_WINDOW_MS) {
 }
 
 // One fling frame: decays velocity v (px per frame) for an elapsed dt; 0 once it is slow.
-export function flingStep(v, dt = FRAME_MS) {
-  const next = v * FLING_DECAY ** (dt / FRAME_MS);
+// A dt that isn't a positive number (clock hiccup) leaves v alone rather than growing it.
+export function flingStep(v, dt = FRAME_MS, decay = FLING_DECAY) {
+  if (!(dt > 0)) return v;
+  const next = v * decay ** (dt / FRAME_MS);
   return Math.abs(next) < FLING_STOP ? 0 : next;
+}
+
+// "↓ Latest" shows while xterm is up in its history, or while the area's own scroll
+// (a zoomed or tall terminal) isn't at its bottom.
+export function latestVisible({ viewportY, baseY, scrollTop, scrollHeight, clientHeight }) {
+  return viewportY < baseY || scrollTop < scrollHeight - clientHeight - 1;
 }

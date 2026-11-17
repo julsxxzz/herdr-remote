@@ -29,17 +29,22 @@ export function effectiveScale(state, containerWidth, naturalWidth) {
   return state.mode === 'fit' ? fitScale(containerWidth, naturalWidth) : clampZoom(state.zoom);
 }
 
-export const zoomIn = (scale) => ({ mode: 'manual', zoom: clampZoom(tidy(scale * ZOOM_STEP)) });
-export const zoomOut = (scale) => ({ mode: 'manual', zoom: clampZoom(tidy(scale / ZOOM_STEP)) });
+// Fit can exceed MAX_ZOOM (a narrow terminal on a wide screen). A zoom gesture starting
+// there starts from MAX_ZOOM, so − or a pinch-in steps down from 200% instead of landing on it.
+const gestureBase = (scale) => Math.min(scale, MAX_ZOOM);
 
+export const zoomIn = (scale) => ({ mode: 'manual', zoom: clampZoom(tidy(gestureBase(scale) * ZOOM_STEP)) });
+export const zoomOut = (scale) => ({ mode: 'manual', zoom: clampZoom(tidy(gestureBase(scale) / ZOOM_STEP)) });
+
+// The middle chip: 'Fit' when fitted, else the percentage plus a reminder that a tap fits.
 export function zoomLabel(state) {
-  return state.mode === 'fit' ? 'Fit' : `${Math.round(clampZoom(state.zoom) * 100)}%`;
+  return state.mode === 'fit' ? 'Fit' : `${Math.round(clampZoom(state.zoom) * 100)}% · Fit`;
 }
 
 // New scale for a pinch that started at startScale with the fingers startDist apart.
 export function pinchScale(startScale, startDist, dist) {
   if (!(startDist > 0) || !(dist > 0)) return clampZoom(startScale);
-  return clampZoom(startScale * (dist / startDist));
+  return clampZoom(gestureBase(startScale) * (dist / startDist));
 }
 
 // Scroll offsets that put the content that was under (fromX, fromY) at fromScale under
@@ -76,7 +81,7 @@ export function zoomAriaLabel(state, scale) {
 // Ctrl/⌘ + wheel: deltaY < 0 (wheel up / trackpad spread) zooms in. 300 px of delta doubles the scale.
 export function wheelScale(scale, deltaY) {
   if (!Number.isFinite(deltaY)) return clampZoom(scale);
-  return clampZoom(scale * 2 ** (-deltaY / 300));
+  return clampZoom(gestureBase(scale) * 2 ** (-deltaY / 300));
 }
 
 function parseState(raw) {
