@@ -1,3 +1,5 @@
+> **Renamed:** the project is now published on npm as `remote-for-herdr` (the npm name `herdr-remote` belongs to an unrelated project). This document is historical and keeps the old name.
+
 # herdr-remote — design
 
 Date: 2026-11-17 · Status: design approved for planning

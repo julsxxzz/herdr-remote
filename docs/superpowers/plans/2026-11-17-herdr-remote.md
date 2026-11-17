@@ -1,3 +1,5 @@
+> **Renamed:** the project is now published on npm as `remote-for-herdr` (the npm name `herdr-remote` belongs to an unrelated project). This document is historical and keeps the old name.
+
 # herdr-remote Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
