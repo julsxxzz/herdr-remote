@@ -2,3 +2,5 @@ node_modules/
 LOCAL-NOTES.md
 .env
 *.log
+node_modules/
+.dev/

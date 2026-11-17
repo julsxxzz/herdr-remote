@@ -1,0 +1,24 @@
+{
+  "name": "herdr-remote",
+  "version": "0.1.0",
+  "description": "Remote, read-only-by-default web view for Herdr terminals",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "herdr-remote": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js start",
+    "setup": "node src/cli.js setup",
+    "dev": "node src/cli.js start --foreground --home .dev",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@xterm/xterm": "^6.0.0",
+    "web-push": "^4.0.0",
+    "ws": "^8.23.0"
+  }
+}
