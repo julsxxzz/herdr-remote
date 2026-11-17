@@ -29,9 +29,9 @@ export function configDir({ env = process.env, platform = process.platform, home
   if (home) return home;
   if (env.HERDR_REMOTE_HOME) return env.HERDR_REMOTE_HOME;
   if (platform === 'win32') {
-    return path.join(env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'herdr-remote');
+    return path.join(env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'remote-for-herdr');
   }
-  return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'herdr-remote');
+  return path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'remote-for-herdr');
 }
 
 function readJson(file) {

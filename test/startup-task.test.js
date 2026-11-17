@@ -36,10 +36,10 @@ test('taskCommands: argv arrays and vbs content', () => {
     '',
   ].join('\r\n'));
   assert.equal(t.vbsPath, 'C:\\h\\start-hidden.vbs');
-  assert.equal(t.xmlPath, 'C:\\h\\herdr-remote-task.xml');
-  assert.deepEqual(t.create, ['schtasks', '/Create', '/F', '/TN', 'herdr-remote', '/XML', 'C:\\h\\herdr-remote-task.xml']);
-  assert.deepEqual(t.end, ['schtasks', '/End', '/TN', 'herdr-remote']);
-  assert.deepEqual(t.remove, ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
+  assert.equal(t.xmlPath, 'C:\\h\\remote-for-herdr-task.xml');
+  assert.deepEqual(t.create, ['schtasks', '/Create', '/F', '/TN', 'remote-for-herdr', '/XML', 'C:\\h\\remote-for-herdr-task.xml']);
+  assert.deepEqual(t.end, ['schtasks', '/End', '/TN', 'remote-for-herdr']);
+  assert.deepEqual(t.remove, ['schtasks', '/Delete', '/F', '/TN', 'remote-for-herdr']);
   assert.equal(t.xml, taskXml({ home: 'C:\\h', userId: USER }));
 });
 
@@ -79,7 +79,7 @@ test('lighter: the launcher waits for the server and runs it again after a crash
   assert.equal(lines[run - 1], 'On Error Resume Next');
   assert.equal(lines[run + 1], 'If Err.Number <> 0 Then WScript.Quit 1');
   assert.equal(lines[run + 2], 'On Error GoTo 0');
-  // A "herdr-remote stop" during the pause (server.stop) is honoured before the next run.
+  // A "remote-for-herdr stop" during the pause (server.stop) is honoured before the next run.
   assert.ok(lines.includes('stopFile = "C:\\h\\server.stop"'));
   const check = at('If fso.FileExists(stopFile) Then');
   assert.ok(check > at(sleep) && check < at('Loop'), vbs);
@@ -97,7 +97,7 @@ test('B24: taskXml triggers on this user\'s logon only and never times out', () 
   assert.match(xml, /<Task version="1\.2" xmlns="http:\/\/schemas\.microsoft\.com\/windows\/2004\/02\/mit\/task">/);
   assert.match(xml, /<LogonTrigger>\s*<Enabled>true<\/Enabled>\s*<UserId>DEMO-PC\\demo<\/UserId>\s*<\/LogonTrigger>/);
   assert.match(xml, /<Principal id="Author">\s*<UserId>DEMO-PC\\demo<\/UserId>\s*<LogonType>InteractiveToken<\/LogonType>\s*<RunLevel>LeastPrivilege<\/RunLevel>/);
-  assert.deepEqual(tag(xml, 'Description'), ['herdr-remote (start at log on)']);
+  assert.deepEqual(tag(xml, 'Description'), ['remote-for-herdr (start at log on)']);
   assert.deepEqual(tag(xml, 'MultipleInstancesPolicy'), ['IgnoreNew']);
   assert.deepEqual(tag(xml, 'DisallowStartIfOnBatteries'), ['false']);
   assert.deepEqual(tag(xml, 'StopIfGoingOnBatteries'), ['false']);
@@ -132,8 +132,8 @@ test('B24: installTask writes the vbs and a UTF-16LE (BOM) xml, then runs schtas
   const calls = [];
   const exec = async (cmd, args) => { calls.push([cmd, ...args]); return { code: 0, stdout: '', stderr: '' }; };
   await installTask({ home, nodePath: 'C:\\n\\node.exe', cliPath: 'C:\\a\\cli.js', exec, userId: USER });
-  const xmlPath = path.join(home, 'herdr-remote-task.xml');
-  assert.deepEqual(calls, [['schtasks', '/Create', '/F', '/TN', 'herdr-remote', '/XML', path.win32.resolve(xmlPath)]]);
+  const xmlPath = path.join(home, 'remote-for-herdr-task.xml');
+  assert.deepEqual(calls, [['schtasks', '/Create', '/F', '/TN', 'remote-for-herdr', '/XML', path.win32.resolve(xmlPath)]]);
   const bytes = fs.readFileSync(xmlPath);
   assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xfe]);
   const text = bytes.subarray(2).toString('utf16le');
@@ -144,7 +144,7 @@ test('B24: installTask writes the vbs and a UTF-16LE (BOM) xml, then runs schtas
   assert.deepEqual([...vbs.subarray(0, 2)], [0xff, 0xfe]); // wscript reads BOM-less files as ANSI
   assert.equal(vbs.subarray(2).toString('utf16le'), taskCommands({ nodePath: 'C:\\n\\node.exe', cliPath: 'C:\\a\\cli.js', home, userId: USER }).vbs);
   await uninstallTask({ home, cliPath: 'C:\\a\\cli.js', exec });
-  assert.deepEqual(calls.at(-1), ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
+  assert.deepEqual(calls.at(-1), ['schtasks', '/Delete', '/F', '/TN', 'remote-for-herdr']);
   assert.equal(fs.existsSync(xmlPath), false);
   assert.equal(fs.existsSync(path.join(home, 'start-hidden.vbs')), false);
 });
@@ -160,8 +160,8 @@ test('lighter: uninstallTask ends the running launcher (/End, exit code ignored)
   fs.writeFileSync(path.join(home, 'start-hidden.vbs'), 'x');
   await uninstallTask({ home, cliPath: 'C:\\a\\cli.js', exec });
   assert.deepEqual(calls, [
-    ['schtasks', '/End', '/TN', 'herdr-remote'],
-    ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote'],
+    ['schtasks', '/End', '/TN', 'remote-for-herdr'],
+    ['schtasks', '/Delete', '/F', '/TN', 'remote-for-herdr'],
   ]);
   assert.equal(fs.existsSync(path.join(home, 'start-hidden.vbs')), false);
 });

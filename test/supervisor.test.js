@@ -146,7 +146,7 @@ test('I3: pid file is removed when the supervisor finishes on its own', async ()
   assert.equal(fs.existsSync(pidFilePath(home)), false);
 });
 
-test('I3: "herdr-remote stop" prints "not running" when nothing runs', async () => {
+test('I3: "remote-for-herdr stop" prints "not running" when nothing runs', async () => {
   const home = tmp();
   fs.writeFileSync(pidFilePath(home), '424242x');
   const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -200,8 +200,8 @@ test('R21: a live foreign pid whose port answers is refused with an actionable m
   assert.deepEqual(r, { ok: false, pid: 424242 });
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242');
   const msg = alreadyRunningMessage(424242, home);
-  assert.ok(msg.includes('herdr-remote stop'), msg);
-  assert.ok(msg.includes(`if herdr-remote isn't actually running, delete ${pidFilePath(home)}`), msg);
+  assert.ok(msg.includes('remote-for-herdr stop'), msg);
+  assert.ok(msg.includes(`if remote-for-herdr isn't actually running, delete ${pidFilePath(home)}`), msg);
 });
 
 test('R21: a freshly written pid file of a live process is respected even before its port answers', async () => {
@@ -221,7 +221,7 @@ test('R21: claimPidFile creates the file exclusively and releases only its own',
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242');
 });
 
-test('B1/R21: "herdr-remote start" exits 78 with a clear line when a live process owns server.pid and the port answers', async () => {
+test('B1/R21: "remote-for-herdr start" exits 78 with a clear line when a live process owns server.pid and the port answers', async () => {
   const home = tmp();
   const blocker = net.createServer((s) => s.destroy());
   await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
@@ -236,7 +236,7 @@ test('B1/R21: "herdr-remote start" exits 78 with a clear line when a live proces
     });
     assert.equal(r.status, EXIT_SETUP_REQUIRED, r.stderr);
     assert.ok(r.stderr.includes(`already running (pid ${foreign})`), r.stderr);
-    assert.ok(r.stderr.includes('herdr-remote stop'), r.stderr);
+    assert.ok(r.stderr.includes('remote-for-herdr stop'), r.stderr);
     assert.ok(r.stderr.includes(`delete ${pidFilePath(home)}`), r.stderr);
     assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), foreign);
   } finally {
@@ -257,7 +257,7 @@ test('B3: stopRunning timeout removes the stop request and names the pid', async
   const home = tmp();
   fs.writeFileSync(pidFilePath(home), '424242');
   const r = await stopRunning({ home, waitMs: 100, pollMs: 20, isAlive: () => true });
-  assert.equal(r, `timeout — 424242 did not stop. If herdr-remote isn't actually running, delete ${pidFilePath(home)}`);
+  assert.equal(r, `timeout — 424242 did not stop. If remote-for-herdr isn't actually running, delete ${pidFilePath(home)}`);
   assert.equal(fs.existsSync(stopFilePath(home)), false);
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242'); // never killed, never touched
 });

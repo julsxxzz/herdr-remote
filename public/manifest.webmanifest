@@ -1,6 +1,6 @@
 {
-  "name": "herdr-remote",
-  "short_name": "herdr",
+  "name": "remote-for-herdr",
+  "short_name": "Herdr Remote",
   "description": "Watch and answer your Herdr agent sessions from your phone.",
   "id": "/",
   "start_url": "/",

@@ -81,7 +81,7 @@ export async function runSetup({
   const dir = configDir({ home });
   const prev = loadConfig(dir);
   // A running server keeps its config/state in memory and would undo this setup.
-  if (await isServerRunning(prev.port)) throw new Error('herdr-remote is running — stop it first: herdr-remote stop');
+  if (await isServerRunning(prev.port)) throw new Error('remote-for-herdr is running — stop it first: remote-for-herdr stop');
   const cfg = { ...prev };
   const state = loadState(dir);
   const ask = async (q, dflt = '') => {
@@ -93,7 +93,7 @@ export async function runSetup({
 
   if (proxy) {
     log('WARNING: proxy mode is unsupported. You are responsible for putting a TLS-terminating,');
-    log('authenticating reverse proxy in front of this server; herdr-remote cannot verify it.');
+    log('authenticating reverse proxy in front of this server; remote-for-herdr cannot verify it.');
     cfg.access = 'proxy';
     const dfltOrigin = prev.publicOrigin ?? '';
     cfg.publicOrigin = await ask(`Public origin (e.g. https://remote.example.com)${dfltOrigin ? ` [${dfltOrigin}]` : ''}: `, dfltOrigin);

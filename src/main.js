@@ -10,14 +10,14 @@ import { createPush } from './push.js';
 import { createNotifier } from './notifier.js';
 
 const repo = new URL('..', import.meta.url);
-const FALLBACK_SUBJECT = 'mailto:herdr-remote@example.invalid';
+const FALLBACK_SUBJECT = 'mailto:remote-for-herdr@example.invalid';
 
 export async function startServer({ home, log = console, hcOverride, webpushOverride } = {}) {
   const cfg = loadConfig(home);
   const state = loadState(home);
   const errors = validateConfig(cfg);
   if (errors.length) {
-    throw Object.assign(new Error('Run "npm run setup" first: ' + errors.join('; ')), { code: 'SETUP_REQUIRED' });
+    throw Object.assign(new Error('Run "remote-for-herdr setup" first: ' + errors.join('; ')), { code: 'SETUP_REQUIRED' });
   }
 
   const hc = hcOverride ?? createHc({ command: cfg.hcPath ?? 'hc' });
@@ -56,7 +56,7 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
     watcher.stop();
     live.close();
     if (err.code === 'EADDRINUSE') {
-      throw Object.assign(new Error(`port ${cfg.port} already in use — is herdr-remote already running?`), { code: 'PORT_IN_USE' });
+      throw Object.assign(new Error(`port ${cfg.port} already in use — is remote-for-herdr already running?`), { code: 'PORT_IN_USE' });
     }
     throw err;
   }

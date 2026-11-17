@@ -381,7 +381,7 @@ test('push endpoints', async () => {
   assert.equal((await req('POST', '/api/push/unsubscribe', { cookie, body: { endpoint: sub.endpoint } })).status, 204);
   assert.deepEqual(pushCalls.filter((c) => c[0] !== 'sendAll'), [['sub', sub], ['unsub', sub.endpoint]]);
   assert.deepEqual((await req('POST', '/api/push/test', { cookie, body: {} })).data, { sent: 1, removed: 0 });
-  assert.deepEqual(pushCalls.at(-1), ['sendAll', { title: 'herdr-remote', body: 'Test notification', address: null, tag: 'test', url: '/' }]);
+  assert.deepEqual(pushCalls.at(-1), ['sendAll', { title: 'remote-for-herdr', body: 'Test notification', address: null, tag: 'test', url: '/' }]);
 });
 
 test('logout-everywhere invalidates the cookie', async () => {

@@ -13,7 +13,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-cfg-'));
 test('configDir: win32 uses APPDATA', () => {
   assert.equal(
     configDir({ env: { APPDATA: 'C:\\A' }, platform: 'win32' }),
-    path.join('C:\\A', 'herdr-remote'),
+    path.join('C:\\A', 'remote-for-herdr'),
   );
 });
 
@@ -26,11 +26,11 @@ test('configDir: HERDR_REMOTE_HOME overrides, home arg wins over both', () => {
 test('configDir: non-windows uses XDG_CONFIG_HOME or ~/.config', () => {
   assert.equal(
     configDir({ env: { XDG_CONFIG_HOME: '/x' }, platform: 'linux' }),
-    path.join('/x', 'herdr-remote'),
+    path.join('/x', 'remote-for-herdr'),
   );
   assert.equal(
     configDir({ env: {}, platform: 'linux' }),
-    path.join(os.homedir(), '.config', 'herdr-remote'),
+    path.join(os.homedir(), '.config', 'remote-for-herdr'),
   );
 });
 
@@ -94,7 +94,7 @@ test('validateConfig: unknown access value', () => {
 test('B4: configDir on win32 without APPDATA falls back to ~/AppData/Roaming', () => {
   assert.equal(
     configDir({ env: {}, platform: 'win32' }),
-    path.join(os.homedir(), 'AppData', 'Roaming', 'herdr-remote'),
+    path.join(os.homedir(), 'AppData', 'Roaming', 'remote-for-herdr'),
   );
 });
 

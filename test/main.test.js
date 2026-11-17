@@ -134,7 +134,7 @@ function openList(cookie) {
 
 test('empty home rejects with setup hint', async () => {
   const { home } = mkdirs();
-  await assert.rejects(startServer({ home, log: silent }), (e) => e.message.startsWith('Run "npm run setup" first:'));
+  await assert.rejects(startServer({ home, log: silent }), (e) => e.message.startsWith('Run "remote-for-herdr setup" first:'));
 });
 
 test('starts, serves /, logs in, lists the fake terminals', async () => {
@@ -208,7 +208,7 @@ async function occupyPort() {
   await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
   return blocker;
 }
-const IN_USE = (p) => `port ${p} already in use — is herdr-remote already running?`;
+const IN_USE = (p) => `port ${p} already in use — is remote-for-herdr already running?`;
 
 test('M5: a second instance on a busy port rejects with PORT_IN_USE', async () => {
   const { home, fake } = mkdirs();
@@ -297,7 +297,7 @@ test('lighter: start --foreground --log puts a fatal error in the log file', asy
   child.stdout.resume();
   child.stderr.resume();
   assert.equal(await exitOf(child), 78);
-  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /npm run setup/);
+  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /remote-for-herdr setup/);
 });
 
 test('B2: start --foreground under a supervisor (IPC) leaves server.pid alone', async () => {

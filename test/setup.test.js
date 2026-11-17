@@ -260,7 +260,7 @@ test('R18: changing the PIN clears sessions; keeping it does not', async () => {
   assert.ok(verifyPin('newpin99', loadConfig(home).pinHash));
 });
 
-test('I3: setup refuses while herdr-remote answers on the configured port; nothing written', async () => {
+test('I3: setup refuses while remote-for-herdr answers on the configured port; nothing written', async () => {
   const home = tmp();
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ port: 4999 }));
   const before = fs.readFileSync(path.join(home, 'config.json'), 'utf8');
@@ -268,7 +268,7 @@ test('I3: setup refuses while herdr-remote answers on the configured port; nothi
   const { exec, calls } = stubExec();
   await assert.rejects(
     runSetup({ home, exec, log: () => {}, prompt: scripted([]).prompt, isServerRunning: async (port) => { probed.push(port); return true; } }),
-    { message: 'herdr-remote is running — stop it first: herdr-remote stop' },
+    { message: 'remote-for-herdr is running — stop it first: remote-for-herdr stop' },
   );
   assert.deepEqual(probed, [4999]);
   assert.equal(calls.length, 0);

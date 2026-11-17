@@ -4,10 +4,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { SERVER_NODE_FLAGS, EXIT_SETUP_REQUIRED } from './supervisor.js';
 
-const TASK_NAME = 'herdr-remote';
+const TASK_NAME = 'remote-for-herdr';
 const VBS_NAME = 'start-hidden.vbs';
 const STOP_NAME = 'server.stop'; // the stop request file, see stopRunning in supervisor.js
-const XML_NAME = 'herdr-remote-task.xml';
+const XML_NAME = 'remote-for-herdr-task.xml';
 
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]
@@ -31,7 +31,7 @@ export function taskXml({ home, userId }) {
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>herdr-remote (start at log on)</Description>
+    <Description>remote-for-herdr (start at log on)</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -72,9 +72,9 @@ export function taskXml({ home, userId }) {
 
 // The hidden launcher, and the server's restarter at login (there is no supervisor process there). It
 // waits for the server and runs it again after a crash or a kill: 1 s, then 2, 4, 8, 16, 30 s between
-// tries, back to 1 s after a run that lasted a minute. Exit 0 (stopped with "herdr-remote stop") and
+// tries, back to 1 s after a run that lasted a minute. Exit 0 (stopped with "remote-for-herdr stop") and
 // 78 (needs setup, port in use, already running: a restart would not help) end it, and so does a
-// "herdr-remote stop" made during the pause (it leaves <home>\server.stop, checked before each
+// "remote-for-herdr stop" made during the pause (it leaves <home>\server.stop, checked before each
 // relaunch; not before the first run, where a leftover file is cleared by the server's claim). If
 // node cannot be started at all (moved or upgraded), it quits with 1 instead of showing a WSH error
 // box. The loop lives here because Task Scheduler's "restart on failure" is not reliably triggered by
@@ -158,7 +158,7 @@ export async function installTask({ home, nodePath = process.execPath, cliPath, 
 export async function uninstallTask({ home, nodePath = process.execPath, cliPath, exec = runCommand }) {
   const t = taskCommands({ nodePath, cliPath, home, userId: '' });
   // End the running launcher first, so no hidden restarter outlives the task. It ends only the
-  // launcher: a running server stays up until "herdr-remote stop". Fails when not running: ignored.
+  // launcher: a running server stays up until "remote-for-herdr stop". Fails when not running: ignored.
   await exec(t.end[0], t.end.slice(1));
   const r = await exec(t.remove[0], t.remove.slice(1));
   fs.rmSync(path.join(home, VBS_NAME), { force: true });
