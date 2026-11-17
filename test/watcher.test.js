@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { createHc } from '../src/hc.js';
 import { TerminalStore } from '../src/terminals.js';
@@ -152,4 +154,78 @@ test('M1: ls polling keeps running after a respawn until the first snapshot line
   await sleep(250); // second child still silent, within stallMs
   assert.ok(lsCalls() - before >= 3, `ls polled ${lsCalls() - before} times`);
   assert.equal(store.get('t7')?.status, 'working');
+});
+
+// An in-process stand-in for an `hc events` child.
+function fakeProc() {
+  const p = new EventEmitter();
+  p.stdout = new PassThrough();
+  p.stderr = new PassThrough();
+  p.exitCode = null;
+  p.signalCode = null;
+  p.kills = 0;
+  p.kill = () => { p.kills++; return true; };
+  return p;
+}
+
+test('B14: hc.events() throwing synchronously is retried instead of crashing', async () => {
+  const store = new TerminalStore();
+  let tries = 0;
+  const warnings = [];
+  const stub = { events: () => { tries++; throw Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' }); }, ls: async () => [] };
+  watcher = startWatcher({ hc: stub, store, log: { ...silent, warn: (m) => warnings.push(m) }, backoffMs: [20], pollMs: 1000 });
+  await until(() => tries >= 3);
+  assert.ok(warnings.some((m) => m.includes('EINVAL')), warnings.join(' | '));
+});
+
+test('B15: an error on a still-alive events child kills it before restarting', async () => {
+  const store = new TerminalStore();
+  const procs = [];
+  const stub = { events: () => { const p = fakeProc(); procs.push(p); return p; }, ls: async () => [] };
+  watcher = startWatcher({ hc: stub, store, log: silent, backoffMs: [20], pollMs: 1000 });
+  procs[0].emit('error', new Error('pipe broke'));
+  assert.equal(procs[0].kills, 1);
+  await until(() => procs.length >= 2);
+});
+
+test('B16: stop() aborts an in-flight hc ls and no callbacks run after stop', async () => {
+  const store = new TerminalStore();
+  const signals = [];
+  let resolveLs;
+  const warnings = [];
+  const stub = {
+    events: () => { const p = fakeProc(); setImmediate(() => p.emit('close', 1)); return p; },
+    ls: ({ signal } = {}) => { signals.push(signal); return new Promise((r, reject) => { resolveLs = r; signal?.addEventListener('abort', () => reject(new Error('aborted'))); }); },
+  };
+  let changed = 0;
+  store.on('changed', () => changed++);
+  watcher = startWatcher({ hc: stub, store, log: { ...silent, warn: (m) => warnings.push(m) }, backoffMs: [5000], pollMs: 5000 });
+  await until(() => signals.length >= 1);
+  const warned = warnings.length;
+  watcher.stop();
+  assert.equal(signals[0]?.aborted, true);
+  resolveLs([]);
+  await sleep(50);
+  assert.equal(changed, 0);
+  assert.equal(warnings.length, warned);
+});
+
+test('B16: hc.ls passes its abort signal to the spawned child', async () => {
+  put('ls.json', LS_ONE);
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(hc.ls({ signal: ac.signal }), (e) => e.name === 'AbortError');
+});
+
+test('B16: stop() clears the current child\'s stall timer even if it never closes', async () => {
+  const store = new TerminalStore();
+  const procs = [];
+  const warnings = [];
+  const stub = { events: () => { const p = fakeProc(); procs.push(p); return p; }, ls: async () => [] };
+  watcher = startWatcher({ hc: stub, store, log: { ...silent, warn: (m) => warnings.push(m) }, stallMs: 100 });
+  watcher.stop();
+  assert.equal(procs[0].kills, 1);
+  await sleep(300);
+  assert.equal(procs[0].kills, 1); // the stall timer did not fire after stop
+  assert.deepEqual(warnings, []);
 });

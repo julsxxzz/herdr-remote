@@ -13,18 +13,35 @@ export function startWatcher({
 }) {
   let stopped = false;
   let child = null;
+  let endChild = null; // ends the current child's bookkeeping (timers, line reader)
   let restartTimer = null;
   let pollTimer = null;
   let step = 0;
   let haveData = false; // any snapshot (events or ls) applied yet
   let snapshots = 0; // bumped on every events snapshot, to drop stale ls results
+  const lsInFlight = new Set(); // AbortControllers of running `hc ls` polls
+
+  function scheduleRestart(why, startedAt) {
+    if (Date.now() - startedAt > HEALTHY_MS) step = 0;
+    const delay = backoffMs[Math.min(step, backoffMs.length - 1)];
+    step += 1;
+    log.warn?.(`hc events ended (${why}); restarting in ${delay} ms`);
+    startPolling();
+    restartTimer = setTimeout(spawnEvents, delay);
+  }
 
   function spawnEvents() {
     restartTimer = null;
     if (stopped) return;
     // ls polling (if any) continues until this child delivers its snapshot.
     const startedAt = Date.now();
-    const proc = hc.events();
+    let proc;
+    try {
+      proc = hc.events();
+    } catch (err) { // e.g. spawn EINVAL is thrown, not emitted
+      scheduleRestart(`error: ${err.message}`, startedAt);
+      return;
+    }
     child = proc;
     let gotSnapshot = false;
     let ended = false;
@@ -43,14 +60,9 @@ export function startWatcher({
       ended = true;
       clearTimeout(stallTimer);
       lines.close();
-      if (child === proc) child = null;
+      if (child === proc) { child = null; endChild = null; }
       if (stopped) return;
-      if (Date.now() - startedAt > HEALTHY_MS) step = 0;
-      const delay = backoffMs[Math.min(step, backoffMs.length - 1)];
-      step += 1;
-      log.warn?.(`hc events ended (${why}); restarting in ${delay} ms`);
-      startPolling();
-      restartTimer = setTimeout(spawnEvents, delay);
+      scheduleRestart(why, startedAt);
     };
 
     const lines = readline.createInterface({ input: proc.stdout });
@@ -75,15 +87,24 @@ export function startWatcher({
         else store.apply(msg.params);
       }
     });
+    endChild = () => onEnd('stopped');
     proc.stderr?.resume();
-    proc.on('error', (err) => onEnd(`error: ${err.message}`));
+    proc.on('error', (err) => {
+      // The child may still be running (e.g. a failed kill or pipe error): don't leave an orphan.
+      if (proc.exitCode === null && proc.signalCode === null) {
+        try { proc.kill(); } catch { /* already gone */ }
+      }
+      onEnd(`error: ${err.message}`);
+    });
     proc.on('close', (code) => onEnd(`exit ${code}`));
   }
 
   async function pollOnce() {
     const seen = snapshots;
+    const ac = new AbortController();
+    lsInFlight.add(ac);
     try {
-      const items = await hc.ls();
+      const items = await hc.ls({ signal: ac.signal });
       if (stopped || seen !== snapshots) return;
       store.reset(
         { seq: store.seq, terminals: items.map(lsToTerminal) },
@@ -91,7 +112,9 @@ export function startWatcher({
       );
       haveData = true;
     } catch (err) {
-      log.warn?.(`hc ls failed: ${err.message}`);
+      if (!stopped) log.warn?.(`hc ls failed: ${err.message}`);
+    } finally {
+      lsInFlight.delete(ac);
     }
   }
 
@@ -113,7 +136,10 @@ export function startWatcher({
       stopped = true;
       clearTimeout(restartTimer);
       stopPolling();
+      for (const ac of lsInFlight) ac.abort();
+      lsInFlight.clear();
       child?.kill();
+      endChild?.(); // don't rely on 'close': a stuck child must not keep the stall timer alive
       child = null;
     },
   };
