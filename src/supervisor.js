@@ -6,6 +6,12 @@ import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const EXIT_SETUP_REQUIRED = 78; // sysexits EX_CONFIG
+
+// Node/V8 flags for every server process: the supervisor's fork and the start-at-login launcher (keep
+// the npm scripts in step). Empty on purpose: --max-semi-space-size=1, --optimize-for-size,
+// --max-old-space-size=128, --v8-pool-size=1 and their combination each moved the server's memory by
+// under 2 MB (noise), and --lite-mode stops it starting (no WebAssembly: importing node:http fails). See README, Memory.
+export const SERVER_NODE_FLAGS = Object.freeze([]);
 const CLI = fileURLToPath(new URL('./cli.js', import.meta.url));
 
 // The running server's pid (supervisor, or a standalone --foreground run), and the file
@@ -107,7 +113,10 @@ export const alreadyRunningMessage = (pid, home) =>
   `herdr-remote is already running (pid ${pid}) — use "herdr-remote stop" first. `
   + `${staleHint(home).replace(/^If/, 'if')}.`;
 
-function createLog(dir, maxBytes) {
+const DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024;
+
+// <dir>/server.log, rotated to server.log.1 at maxBytes. Shared by the supervisor and "start --foreground --log".
+export function createLog(dir, maxBytes = DEFAULT_MAX_LOG_BYTES) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'server.log');
   let size = fs.existsSync(file) ? fs.statSync(file).size : 0;
@@ -125,14 +134,15 @@ function createLog(dir, maxBytes) {
 }
 
 // Runs the server in a child process, restarting it when it crashes.
-// `entry`/`args`/`backoffMs`/`maxLogBytes` are overridable for tests.
+// `entry`/`args`/`backoffMs`/`maxLogBytes`/`execArgv` are overridable for tests.
 export function superviseServer({
   home,
   entry = CLI,
   args = ['start', '--foreground', '--home', home],
   backoffMs = [1000, 2000, 5000, 10000, 30000],
   stableMs = 60000,
-  maxLogBytes = 5 * 1024 * 1024,
+  maxLogBytes = DEFAULT_MAX_LOG_BYTES,
+  execArgv = SERVER_NODE_FLAGS,
   killAfterMs = 5000,
   controlPollMs = 500,
   isAlive = processAlive,
@@ -157,7 +167,7 @@ export function superviseServer({
 
   const launch = () => {
     const startedAt = Date.now();
-    const c = forkImpl(entry, args, { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
+    const c = forkImpl(entry, args, { execArgv: [...execArgv], stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
     child = c;
     c.stdout.on('data', (d) => log.write(String(d)));
     c.stderr.on('data', (d) => log.write(String(d)));

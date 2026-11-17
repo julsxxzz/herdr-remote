@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { SERVER_NODE_FLAGS, EXIT_SETUP_REQUIRED } from './supervisor.js';
 
 const TASK_NAME = 'herdr-remote';
 const VBS_NAME = 'start-hidden.vbs';
@@ -21,7 +22,8 @@ const vbsPathFor = (home) => path.win32.join(path.win32.resolve(home), VBS_NAME)
 
 // Task Scheduler definition (schema 1.2). An XML task instead of /SC ONLOGON flags so the trigger is
 // limited to this user's logon, it runs without elevation, and it is never stopped after the default
-// 72 h time limit or on battery.
+// 72 h time limit or on battery. There is no supervisor process at login (it cost a whole Node
+// process): the task runs the server itself, and Task Scheduler restarts it a minute after it fails.
 export function taskXml({ home, userId }) {
   const user = xmlEscape(userId);
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -47,6 +49,10 @@ export function taskXml({ home, userId }) {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
     <Enabled>true</Enabled>
@@ -62,11 +68,36 @@ export function taskXml({ home, userId }) {
 `;
 }
 
+// The hidden launcher, and the server's restarter at login (there is no supervisor process there). It
+// waits for the server and runs it again after a crash or a kill: 1 s, then 2, 4, 8, 16, 30 s between
+// tries, back to 1 s after a run that lasted a minute. Exit 0 (stopped with "herdr-remote stop") and
+// 78 (needs setup, port in use, already running: a restart would not help) end it. The loop lives
+// here because Task Scheduler's "restart on failure" is not reliably triggered by a non-zero exit
+// code; the task's <RestartOnFailure> is only a backstop for the launcher itself.
+function launcherVbs({ nodePath, cliPath, absHome }) {
+  const flags = SERVER_NODE_FLAGS.map((f) => `${f} `).join('');
+  const cmd = `""${nodePath}"" ${flags}""${cliPath}"" start --foreground --log --home ""${absHome}""`;
+  return [
+    'Set sh = CreateObject("WScript.Shell")',
+    'pause = 1',
+    'Do',
+    '  started = Now',
+    `  rc = sh.Run("${cmd}", 0, True)`,
+    `  If rc = 0 Or rc = ${EXIT_SETUP_REQUIRED} Then WScript.Quit 0`,
+    '  If DateDiff("s", started, Now) >= 60 Then pause = 1',
+    '  WScript.Sleep pause * 1000',
+    '  pause = pause * 2',
+    '  If pause > 30 Then pause = 30',
+    'Loop',
+    '',
+  ].join('\r\n');
+}
+
 export function taskCommands({ nodePath, cliPath, home, userId = defaultUserId() }) {
   const absHome = path.win32.resolve(home);
   const xmlPath = path.win32.join(absHome, XML_NAME);
   return {
-    vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start --home ""${absHome}""", 0, False\n`,
+    vbs: launcherVbs({ nodePath, cliPath, absHome }),
     vbsPath: vbsPathFor(absHome),
     xml: taskXml({ home: absHome, userId }),
     xmlPath,

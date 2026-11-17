@@ -10,6 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   superviseServer, stopRunning, pidFilePath, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
+  SERVER_NODE_FLAGS,
 } from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-sup-'));
@@ -268,6 +269,35 @@ test('B21: a child error while it is still alive kills it and restarts only afte
   } finally {
     await sup.stop();
   }
+});
+
+test('lighter: the supervisor forks the server with the server flags (and nothing inherited)', async () => {
+  const home = tmp();
+  const calls = [];
+  const forkImpl = (entry, args, opts) => { calls.push({ entry, args, opts }); return stubChild({ exitOnKill: true }); };
+  const sup = superviseServer({ home, forkImpl, execArgv: ['--max-old-space-size=128'] });
+  const sup2 = superviseServer({ home: tmp(), forkImpl });
+  try {
+    assert.ok(await until(() => calls.length === 2));
+    const mine = calls.find((c) => c.args.includes(home));
+    const other = calls.find((c) => c !== mine);
+    assert.deepEqual(mine.opts.execArgv, ['--max-old-space-size=128']);
+    assert.deepEqual(mine.args, ['start', '--foreground', '--home', home]);
+    // The default is SERVER_NODE_FLAGS, never the supervisor's own execArgv (e.g. --inspect).
+    assert.deepEqual(other.opts.execArgv, [...SERVER_NODE_FLAGS]);
+  } finally {
+    await sup.stop();
+    await sup2.stop();
+  }
+});
+
+test('lighter: npm start and npm run dev pass the same server flags to node', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  for (const name of ['start', 'dev']) {
+    assert.ok(pkg.scripts[name].startsWith(['node', ...SERVER_NODE_FLAGS, 'src/cli.js start'].join(' ')), `${name}: ${pkg.scripts[name]}`);
+  }
+  assert.ok(pkg.scripts.dev.includes('--foreground'));
+  assert.ok(!pkg.scripts.start.includes('--foreground')); // manual start keeps the quick-restart supervisor
 });
 
 test('B21: a spawn error (no pid) is still treated as an end and retried', async () => {

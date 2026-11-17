@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from 'node:path';
 import readline from 'node:readline';
 import { Writable } from 'node:stream';
 import { parseArgs } from 'node:util';
@@ -7,7 +8,7 @@ import { configDir } from './config.js';
 import { startServer } from './main.js';
 import { runSetup } from './setup.js';
 import {
-  superviseServer, stopRunning, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
+  superviseServer, stopRunning, claimPidFile, alreadyRunningMessage, createLog, EXIT_SETUP_REQUIRED,
 } from './supervisor.js';
 import { installTask, uninstallTask } from './startup-task.js';
 
@@ -16,7 +17,9 @@ const CLI_PATH = fileURLToPath(import.meta.url);
 const HELP = `herdr-remote - remote web view for Herdr terminals
 
 Usage:
-  herdr-remote start [--foreground] [--home <dir>]   run the server (restarts on crash unless --foreground)
+  herdr-remote start [--foreground [--log]] [--home <dir>]
+                                                     run the server (restarts on crash unless --foreground;
+                                                     --log writes its output to <home>\\logs\\server.log)
   herdr-remote stop [--home <dir>]                   stop the running server
   herdr-remote setup [--proxy] [--home <dir>]        interactive setup (stop the server first)
   herdr-remote install-task [--home <dir>]           start at Windows login (Task Scheduler)
@@ -53,7 +56,24 @@ function createPrompt() {
   return { prompt, close: () => rl.close() };
 }
 
-async function foreground(home) {
+// Sends everything the process prints (fatal errors included) to <home>/logs/server.log. For the
+// start-at-login task, whose hidden console nobody can read.
+function logToFile(home) {
+  const log = createLog(path.join(home, 'logs'));
+  const write = (text) => { try { log.write(text); } catch { /* never crash over the log */ } };
+  const sink = (chunk, encoding, cb) => {
+    write(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+    (typeof encoding === 'function' ? encoding : cb)?.();
+    return true;
+  };
+  process.stdout.write = sink;
+  process.stderr.write = sink;
+  process.on('uncaughtExceptionMonitor', (err) => write(`${err?.stack ?? err}\n`));
+  write(`[server ${new Date().toISOString()}] starting (pid ${process.pid})\n`);
+}
+
+async function foreground(home, { log = false } = {}) {
+  if (log) logToFile(home);
   // Under the supervisor (IPC channel present) the supervisor owns server.pid and stop requests;
   // a standalone --foreground run owns them itself so "herdr-remote stop" works for it too.
   const supervised = typeof process.send === 'function';
@@ -99,13 +119,13 @@ async function main(argv) {
   }
   const { values } = parseArgs({
     args: rest,
-    options: { foreground: { type: 'boolean' }, proxy: { type: 'boolean' }, home: { type: 'string' } },
+    options: { foreground: { type: 'boolean' }, log: { type: 'boolean' }, proxy: { type: 'boolean' }, home: { type: 'string' } },
   });
   const home = configDir({ home: values.home });
 
   switch (command) {
     case 'start': {
-      if (values.foreground) return foreground(home);
+      if (values.foreground) return foreground(home, { log: values.log });
       const sup = superviseServer({ home });
       const quit = () => sup.stop();
       process.once('SIGINT', quit);
