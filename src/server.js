@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { checkIdentity, checkOrigin, verifyPin, sessionCookie, readSessionToken } from './auth.js';
-import { isValidKeyName } from './hc.js';
+import { isValidAddress, isValidKeyName } from './hc.js';
 
 const MAX_BODY = 16 * 1024;
 const MAX_TEXT = 4000;
@@ -32,9 +32,9 @@ class HttpError extends Error {
   }
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders = {}) {
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data), ...extraHeaders });
   res.end(data);
 }
 
@@ -45,16 +45,25 @@ function sendText(res, status, text) {
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (declared > MAX_BODY) return reject(new HttpError(413, { error: 'too_large' }));
     const chunks = [];
     let size = 0;
     let tooBig = false;
     req.on('data', (c) => {
+      if (tooBig) return;
       size += c.length;
-      if (size > MAX_BODY) { tooBig = true; chunks.length = 0; } else if (!tooBig) chunks.push(c);
+      if (size > MAX_BODY) {
+        tooBig = true;
+        chunks.length = 0;
+        req.removeAllListeners('data');
+        req.pause(); // stop reading; the 413 closes the connection
+        reject(new HttpError(413, { error: 'too_large' }));
+      } else chunks.push(c);
     });
     req.on('error', reject);
     req.on('end', () => {
-      if (tooBig) return reject(new HttpError(413, { error: 'too_large' }));
+      if (tooBig) return;
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw.trim()) return resolve({});
       try {
@@ -102,13 +111,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
 
   async function sendToTerminal(res, address, run) {
     if (!store.get(address)) return sendJson(res, 404, { error: 'not_found' });
-    let r;
-    try {
-      r = await run();
-    } catch (err) {
-      if (err instanceof TypeError) return sendJson(res, 400, { error: 'bad_request' });
-      throw err;
-    }
+    const r = await run();
     if (!r.ok) return sendJson(res, 409, { error: r.error });
     res.writeHead(204);
     res.end();
@@ -154,6 +157,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
     if (m && method === 'POST') {
       let address;
       try { address = decodeURIComponent(m[1]); } catch { return sendJson(res, 404, { error: 'not_found' }); }
+      if (!isValidAddress(address)) return sendJson(res, 404, { error: 'not_found' });
       if (m[2] === 'send') {
         const { text } = body;
         if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT) {
@@ -187,7 +191,9 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
         || !s.keys || typeof s.keys.p256dh !== 'string' || typeof s.keys.auth !== 'string') {
         return sendJson(res, 400, { error: 'bad_subscription' });
       }
-      push.subscribe(s);
+      const clean = { endpoint: s.endpoint, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth } };
+      if (s.expirationTime !== undefined) clean.expirationTime = s.expirationTime;
+      push.subscribe(clean);
       res.writeHead(204);
       return res.end();
     }
@@ -198,7 +204,7 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
       return res.end();
     }
     if (pathname === '/api/push/test' && method === 'POST') {
-      return sendJson(res, 200, await push.sendAll({ title: 'herdr-remote', body: 'Test notification', address: null, test: true }));
+      return sendJson(res, 200, await push.sendAll({ title: 'herdr-remote', body: 'Test notification', address: null, tag: 'test', url: '/' }));
     }
 
     return sendJson(res, 404, { error: 'not_found' });
@@ -208,6 +214,8 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
     res.setHeader('Content-Security-Policy', CSP);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+
+    if ((req.url ?? '').split('?')[0].startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
 
     const identity = checkIdentity(req.headers, config);
     if (!identity.ok) return sendText(res, 403, 'Not allowed');
@@ -220,14 +228,15 @@ export function createServer({ config, state, saveState, hc, store, sessions, li
       try {
         body = await readJsonBody(req);
       } catch (err) {
-        if (err instanceof HttpError) return sendJson(res, err.status, err.body);
+        if (err instanceof HttpError) {
+          return sendJson(res, err.status, err.body, err.status === 413 ? { connection: 'close' } : {});
+        }
         throw err;
       }
     }
 
     const pathname = (req.url ?? '/').split('?')[0];
     if (pathname.startsWith('/api/')) {
-      res.setHeader('Cache-Control', 'no-store');
       return api(req, res, pathname, body, identity);
     }
     if (method !== 'GET' && method !== 'HEAD') return sendText(res, 404, 'Not found');

@@ -60,7 +60,7 @@ async function start(configOverrides = {}) {
       publicKey: 'K',
       subscribe: (s) => pushCalls.push(['sub', s]),
       unsubscribe: (e) => pushCalls.push(['unsub', e]),
-      sendAll: async () => ({ sent: 1, removed: 0 }),
+      sendAll: async (payload) => { pushCalls.push(['sendAll', payload]); return { sent: 1, removed: 0 }; },
     },
     publicDir: path.join(root, 'public'),
     vendorDir: path.join(root, 'node_modules', '@xterm', 'xterm'),
@@ -138,6 +138,10 @@ test('POST needs matching Origin and JSON content type', async () => {
 test('oversized body is 413, bad JSON is 400', async () => {
   const big = await req('POST', '/api/login', { body: JSON.stringify({ pin: 'x'.repeat(17000) }) });
   assert.equal(big.status, 413);
+  assert.equal(big.headers['cache-control'], 'no-store');
+  const bigNoId = await req('POST', '/api/login', { body: JSON.stringify({ pin: 'x'.repeat(17000) }), id: false });
+  assert.equal(bigNoId.status, 403);
+  assert.equal(bigNoId.headers['cache-control'], 'no-store');
   const bad = await req('POST', '/api/login', { body: '{nope' });
   assert.equal(bad.status, 400);
 });
@@ -200,7 +204,7 @@ test('terminals list and send', async () => {
   assert.equal(list.data.deskMode, false);
 
   assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: '--help' } })).status, 204);
-  assert.deepEqual(calls().at(-1).slice(-2), ['--', '--help']);
+  assert.deepEqual(calls().at(-1), ['send', 't1', '--', '--help']);
   assert.equal((await req('POST', '/api/terminals/t9/send', { cookie, body: { text: 'hi' } })).status, 404);
   assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: '  ' } })).status, 400);
   assert.equal((await req('POST', '/api/terminals/t1/send', { cookie, body: { text: 'x'.repeat(4001) } })).status, 400);
@@ -241,9 +245,15 @@ test('push endpoints', async () => {
   const sub = { endpoint: 'https://push.example/abc', keys: { p256dh: 'a', auth: 'b' } };
   assert.equal((await req('POST', '/api/push/subscribe', { cookie, body: { subscription: sub } })).status, 204);
   assert.equal((await req('POST', '/api/push/subscribe', { cookie, body: { subscription: {} } })).status, 400);
+  const insecure = { ...sub, endpoint: 'http://push.example/abc' };
+  assert.equal((await req('POST', '/api/push/subscribe', { cookie, body: { subscription: insecure } })).status, 400);
+  const extra = await req('POST', '/api/push/subscribe', { cookie, body: { subscription: { ...sub, junk: 'x' } } });
+  assert.equal(extra.status, 204);
+  assert.deepEqual(pushCalls.pop(), ['sub', sub]);
   assert.equal((await req('POST', '/api/push/unsubscribe', { cookie, body: { endpoint: sub.endpoint } })).status, 204);
-  assert.deepEqual(pushCalls, [['sub', sub], ['unsub', sub.endpoint]]);
+  assert.deepEqual(pushCalls.filter((c) => c[0] !== 'sendAll'), [['sub', sub], ['unsub', sub.endpoint]]);
   assert.deepEqual((await req('POST', '/api/push/test', { cookie, body: {} })).data, { sent: 1, removed: 0 });
+  assert.deepEqual(pushCalls.at(-1), ['sendAll', { title: 'herdr-remote', body: 'Test notification', address: null, tag: 'test', url: '/' }]);
 });
 
 test('logout-everywhere invalidates the cookie', async () => {
