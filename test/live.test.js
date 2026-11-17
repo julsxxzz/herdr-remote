@@ -266,11 +266,17 @@ test('spawn error ends the stream instead of crashing', async () => {
 
 test('heartbeat terminates a /ws/term client that stops ponging and kills its child', async () => {
   await restart({ heartbeatMs: 100 });
+  // Pong by hand until the stream is up, then go silent. With autoPong off from the start, the
+  // heartbeat (100-200 ms) raced the fake hc's node startup, which can be slower than that.
   const c = open('/ws/term?address=t1', { autoPong: false });
+  let ponging = true;
+  c.ws.on('ping', (d) => { if (ponging) c.ws.pong(d); });
   await waitFor(() => c.msgs.length >= 2);
   assert.equal(children.length, 1);
+  ponging = false;
   await waitFor(() => children[0].exitCode !== null || children[0].signalCode !== null, 3000);
   await waitFor(() => c.closed !== null);
+  assert.equal(c.closed, 1006); // terminated, no close frame
 });
 
 test('heartbeat terminates a silent /ws/list client and clears visibility; live clients survive', async () => {
