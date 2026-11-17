@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { configDir } from './config.js';
 import { startServer } from './main.js';
 import { runSetup } from './setup.js';
-import { superviseServer, EXIT_SETUP_REQUIRED } from './supervisor.js';
+import { superviseServer, stopRunning, EXIT_SETUP_REQUIRED } from './supervisor.js';
 import { installTask, uninstallTask } from './startup-task.js';
 
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -15,7 +15,8 @@ const HELP = `herdr-remote - remote web view for Herdr terminals
 
 Usage:
   herdr-remote start [--foreground] [--home <dir>]   run the server (restarts on crash unless --foreground)
-  herdr-remote setup [--proxy] [--home <dir>]        interactive setup
+  herdr-remote stop [--home <dir>]                   stop the running server
+  herdr-remote setup [--proxy] [--home <dir>]        interactive setup (stop the server first)
   herdr-remote install-task [--home <dir>]           start at Windows login (Task Scheduler)
   herdr-remote uninstall-task [--home <dir>]         remove the login task
   herdr-remote --help
@@ -56,7 +57,8 @@ async function foreground(home) {
     running = await startServer({ home, log: console });
   } catch (err) {
     console.error(err.message);
-    process.exit(err.code === 'SETUP_REQUIRED' ? EXIT_SETUP_REQUIRED : 1);
+    // Neither is fixed by restarting: the supervisor stops on this code instead of looping.
+    process.exit(err.code === 'SETUP_REQUIRED' || err.code === 'PORT_IN_USE' ? EXIT_SETUP_REQUIRED : 1);
   }
   const shutdown = async () => { await running.stop(); process.exit(0); };
   process.on('disconnect', shutdown); // supervisor gone: don't hold the port
@@ -85,9 +87,17 @@ async function main(argv) {
       process.once('SIGTERM', quit);
       const r = await sup.done;
       if (r.reason === 'setup-required') {
-        console.error('herdr-remote needs setup. Run "npm run setup" (see logs/server.log).');
+        console.error('herdr-remote could not start: it needs setup ("npm run setup") or its port is already in use (see logs/server.log).');
         process.exitCode = EXIT_SETUP_REQUIRED;
       }
+      return;
+    }
+    case 'stop': {
+      const r = await stopRunning({ home });
+      if (r === 'timeout') {
+        console.error('herdr-remote did not stop in time (see logs/server.log).');
+        process.exitCode = 1;
+      } else console.log(r);
       return;
     }
     case 'setup': {

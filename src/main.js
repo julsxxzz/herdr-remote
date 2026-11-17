@@ -55,6 +55,9 @@ export async function startServer({ home, log = console, hcOverride, webpushOver
   } catch (err) {
     watcher.stop();
     live.close();
+    if (err.code === 'EADDRINUSE') {
+      throw Object.assign(new Error(`port ${cfg.port} already in use — is herdr-remote already running?`), { code: 'PORT_IN_USE' });
+    }
     throw err;
   }
   const port = server.address().port;

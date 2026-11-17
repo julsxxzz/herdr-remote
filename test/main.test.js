@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { startServer } from '../src/main.js';
@@ -193,4 +194,44 @@ test('stop() closes the port and kills the events child', async () => {
     try { fs.rmSync(fake, { recursive: true, force: true }); } catch { return false; }
     return !fs.existsSync(fake);
   });
+});
+
+async function occupyPort() {
+  const blocker = net.createServer((s) => s.destroy());
+  await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
+  return blocker;
+}
+const IN_USE = (p) => `port ${p} already in use — is herdr-remote already running?`;
+
+test('M5: a second instance on a busy port rejects with PORT_IN_USE', async () => {
+  const { home, fake } = mkdirs();
+  const blocker = await occupyPort();
+  const port = blocker.address().port;
+  try {
+    saveConfig(home, { ...validConfig(), port });
+    await assert.rejects(startServer({ home, log: silent, hcOverride: makeHc(fake) }),
+      (e) => e.code === 'PORT_IN_USE' && e.message === IN_USE(port));
+  } finally {
+    await new Promise((r) => blocker.close(r));
+  }
+});
+
+test('M5: cli start --foreground exits 78 with a clear line when the port is busy', async () => {
+  const { home } = mkdirs();
+  const blocker = await occupyPort();
+  const port = blocker.address().port;
+  try {
+    // hcPath points at nothing, so no real hc is ever run.
+    saveConfig(home, { ...validConfig(), port, hcPath: path.join(home, 'no-such-hc.exe') });
+    const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+    const child = spawn(process.execPath, [cli, 'start', '--foreground', '--home', home], { windowsHide: true });
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.stdout.resume();
+    const code = await new Promise((r) => child.on('exit', r));
+    assert.equal(code, 78);
+    assert.ok(stderr.includes(IN_USE(port)), stderr);
+  } finally {
+    await new Promise((r) => blocker.close(r));
+  }
 });

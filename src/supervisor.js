@@ -6,6 +6,12 @@ import { fileURLToPath } from 'node:url';
 export const EXIT_SETUP_REQUIRED = 78; // sysexits EX_CONFIG
 const CLI = fileURLToPath(new URL('./cli.js', import.meta.url));
 
+// The running supervisor's pid, and the file "herdr-remote stop" drops to ask it to stop.
+// A request file (not a signal) because Windows cannot deliver a catchable signal to another process.
+export const pidFilePath = (home) => path.join(home, 'server.pid');
+const stopRequestPath = (home) => path.join(home, 'server.stop');
+const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
+
 function createLog(dir, maxBytes) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'server.log');
@@ -32,6 +38,8 @@ export function superviseServer({
   backoffMs = [1000, 2000, 5000, 10000, 30000],
   stableMs = 60000,
   maxLogBytes = 5 * 1024 * 1024,
+  killAfterMs = 5000,
+  controlPollMs = 500,
 } = {}) {
   const log = createLog(path.join(home, 'logs'), maxLogBytes);
   const note = (m) => log.write(`[supervisor ${new Date().toISOString()}] ${m}\n`);
@@ -39,8 +47,20 @@ export function superviseServer({
   let timer = null;
   let stopped = false;
   let attempt = 0;
-  let finish;
-  const done = new Promise((r) => { finish = r; });
+  let settle;
+  const done = new Promise((r) => { settle = r; });
+
+  const pidFile = pidFilePath(home);
+  const stopFile = stopRequestPath(home);
+  rmQuiet(stopFile); // a leftover request must not stop this run
+  fs.writeFileSync(pidFile, String(process.pid));
+  const control = setInterval(() => { if (fs.existsSync(stopFile)) { rmQuiet(stopFile); stop(); } }, controlPollMs);
+  control.unref?.();
+  const finish = (result) => {
+    clearInterval(control);
+    try { if (fs.readFileSync(pidFile, 'utf8').trim() === String(process.pid)) rmQuiet(pidFile); } catch { /* already gone */ }
+    settle(result);
+  };
 
   const launch = () => {
     const startedAt = Date.now();
@@ -59,7 +79,7 @@ export function superviseServer({
         return;
       }
       if (code === EXIT_SETUP_REQUIRED) {
-        note('server needs setup; not restarting. Run "npm run setup".');
+        note('server cannot start (needs setup, or its port is already in use; see above); not restarting.');
         finish({ reason: 'setup-required' });
         return;
       }
@@ -81,11 +101,39 @@ export function superviseServer({
     if (child) {
       const c = child;
       const exited = new Promise((r) => c.once('exit', r));
-      c.kill();
+      // The server shuts down cleanly when its IPC channel closes (cli.js); kill only if it hangs.
+      const killer = setTimeout(() => c.kill(), killAfterMs);
+      if (c.connected) c.disconnect();
+      else c.kill();
       await exited;
+      clearTimeout(killer);
     }
+    note('stopped.');
     finish({ reason: 'stopped' });
     return done;
   };
   return { stop, done };
+}
+
+const processAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+};
+
+// Asks the supervisor recorded in <home>/server.pid to stop, and waits for it.
+// Resolves 'stopped', 'not running' (no or stale pid file) or 'timeout'.
+export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive = processAlive }) {
+  const pidFile = pidFilePath(home);
+  let pid;
+  try { pid = Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { return 'not running'; }
+  if (!Number.isInteger(pid) || pid <= 0 || !isAlive(pid)) {
+    rmQuiet(pidFile);
+    return 'not running';
+  }
+  fs.writeFileSync(stopRequestPath(home), 'stop');
+  const end = Date.now() + waitMs;
+  while (Date.now() < end) {
+    if (!fs.existsSync(pidFile) || !isAlive(pid)) return 'stopped';
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return 'timeout';
 }

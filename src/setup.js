@@ -1,3 +1,4 @@
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configDir, loadConfig, saveConfig, loadState, saveState, validateConfig } from './config.js';
@@ -14,6 +15,17 @@ export function parseTailscaleStatus(json) {
     dnsName: typeof dns === 'string' && dns ? dns.replace(/\.$/, '') : null,
     httpsReady: Array.isArray(json?.CertDomains) && json.CertDomains.length > 0,
   };
+}
+
+// True when something accepts a TCP connection on 127.0.0.1:<port> (e.g. a running server).
+export function portAnswers(port, { timeoutMs = 1000 } = {}) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: '127.0.0.1', port });
+    const done = (answer) => { sock.destroy(); resolve(answer); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
 }
 
 export const originFromDnsName = (dnsName) => 'https://' + dnsName;
@@ -63,10 +75,13 @@ async function askPin({ prompt, log, existing }) {
 export async function runSetup({
   home, proxy = false, prompt, exec = runCommand, log = console.log,
   installTask = realInstallTask,
+  isServerRunning = portAnswers,
   cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)),
 }) {
   const dir = configDir({ home });
   const prev = loadConfig(dir);
+  // A running server keeps its config/state in memory and would undo this setup.
+  if (await isServerRunning(prev.port)) throw new Error('herdr-remote is running — stop it first: herdr-remote stop');
   const cfg = { ...prev };
   const state = loadState(dir);
   const ask = async (q, dflt = '') => {
@@ -112,6 +127,7 @@ export async function runSetup({
 
   const identityChanged = proxy && (prev.proxyIdentityHeader !== cfg.proxyIdentityHeader || prev.proxyIdentityValue !== cfg.proxyIdentityValue);
   if (identityChanged) state.sessions = {};
+  if (prev.pinHash && prev.pinHash !== cfg.pinHash) state.sessions = {}; // R18: new PIN signs everyone out
   if (prev.publicOrigin !== cfg.publicOrigin || prev.allowedLogin !== cfg.allowedLogin) {
     state.subscriptions = [];
     state.sessions = {};
