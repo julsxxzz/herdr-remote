@@ -21,7 +21,15 @@ That is the recommended way: start-at-login needs a stable install, and a global
 npx remote-for-herdr setup
 ```
 
-npx runs it from a temporary cache that npm may clean up, so setup does not install start-at-login from there: it starts the app for this session only and tells you to install it globally for good.
+npx runs it from a temporary cache that npm may clean up, so setup never installs start-at-login from there. If you say yes to start-at-login, it starts the app in the background instead: the app keeps running until you stop it, log off or restart the PC, and nothing restarts it after a crash. Your setup is saved in `%APPDATA%\remote-for-herdr` either way. To keep it for good:
+
+```powershell
+npm i -g remote-for-herdr
+remote-for-herdr install-task
+remote-for-herdr restart
+```
+
+`restart` stops the copy started from npx and starts the app again through the new start-at-login task. You do not need to run setup again.
 
 `remote-for-herdr setup` is interactive. It:
 
@@ -29,7 +37,7 @@ npx runs it from a temporary cache that npm may clean up, so setup does not inst
 2. Checks Tailscale is running with HTTPS certificates, and asks for the allowed Tailscale login (default: the one you are signed in with).
 3. Asks for a PIN (at least 6 characters, typed hidden) and generates push (VAPID) keys.
 4. Offers to run `tailscale serve --bg 4780` for you. If you say no, run it yourself.
-5. Offers to start remote-for-herdr at Windows login. If you say yes, it installs the task and starts the app right away; if not, it prints the command to start it.
+5. Asks whether to start remote-for-herdr at Windows login (Enter means yes). If yes, it installs the task and starts the app right away, then waits until it answers. If no, it prints the command to start it.
 6. Prints the URL to open on your phone, e.g. `https://box.example.ts.net`, and a QR code of it to scan with the phone's camera.
 
 Check it any time with `remote-for-herdr status` (running or not, its pid, the phone URL, whether start-at-login is installed).
@@ -53,7 +61,7 @@ Then, if you like: `tailscale serve --https=443 off`, delete `%APPDATA%\remote-f
 
 ### Upgrading from herdr-remote
 
-This project used to be called herdr-remote. Install `remote-for-herdr` as above (`npm i -g remote-for-herdr`), then run `remote-for-herdr restart` (or any other command). On that first run it moves your config from `%APPDATA%\herdr-remote` to `%APPDATA%\remote-for-herdr` (if the folder cannot be moved, it is copied and the old one kept), stopping the old server first if it still runs from there, and replaces the old `herdr-remote` start-at-login task with the new `remote-for-herdr` one. Your PIN, push keys and Tailscale settings are kept, so the phone link does not change: just re-open the app on the phone. `HERDR_REMOTE_HOME` still works (`REMOTE_FOR_HERDR_HOME` is the new name), and the `herdr-remote` command remains as an alias for now. If you ran it from a git clone, you can delete that folder afterwards.
+This project used to be called herdr-remote. Install `remote-for-herdr` as above (`npm i -g remote-for-herdr`), then run `remote-for-herdr restart` (`setup`, `start` and `install-task` do it too; `status` only tells you the move is pending). On that first run it moves your config from `%APPDATA%\herdr-remote` to `%APPDATA%\remote-for-herdr` (if the folder cannot be moved, it is copied and the old one kept). It stops the old server first if it still runs from there; if that server does not stop, nothing is moved and it tells you its pid. It also replaces the old `herdr-remote` start-at-login task with the new `remote-for-herdr` one. Your PIN, push keys and Tailscale settings are kept, so the phone link does not change: just re-open the app on the phone. `HERDR_REMOTE_HOME` still works (`REMOTE_FOR_HERDR_HOME` is the new name), and the `herdr-remote` command remains as an alias for now. If you ran it from a git clone, you can delete that folder afterwards. If you had a herdr-remote start-at-login task, run the upgrade from the global install, not through `npx`: from npx's temporary cache the task cannot be moved, so nothing is changed and you are asked to `npm i -g remote-for-herdr` first.
 
 ## Why
 
@@ -89,7 +97,7 @@ Commands (`remote-for-herdr ...`; from a source checkout, `node src/cli.js ...`)
 | `status [--home <dir>]` | Whether it is running (pid, port), the phone URL, whether start-at-login is installed, the config folder. |
 | `start [--foreground [--log]] [--home <dir>]` | Run the server; restarts on crash unless `--foreground`. `--log` sends its output to `<home>\logs\server.log` instead of the console. Refuses (exit 78) if another copy already runs for the same home. |
 | `stop [--home <dir>]` | Stop the running server, supervised, `--foreground` or started at login (prints `stopped` or `not running`). |
-| `restart [--home <dir>]` | Stop it, then start it again through the start-at-login task. Without the task it tells you to use `start` (or `install-task`). |
+| `restart [--home <dir>]` | Stop it, then start it again through the start-at-login task. Without the task, it starts the app in the background (no restart after a crash or at login) and says how to add the task. |
 | `install-task [--home <dir>]` | Start at Windows login (Task Scheduler task `remote-for-herdr`, hidden window). Also removes an old `herdr-remote` task. |
 | `uninstall-task [--home <dir>]` | Remove that task (both the `remote-for-herdr` and an old `herdr-remote` one; ends its hidden launcher; a running server stays up until `stop`). |
 
