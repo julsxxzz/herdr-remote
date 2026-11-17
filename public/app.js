@@ -158,8 +158,8 @@ function startApp() {
       setDeskMode(desk);
       renderListView();
       if (termView) {
-        const it = items.find((i) => i.address === termView.address);
-        if (it) termView.update(it);
+        // null = the terminal left the list (finished or removed).
+        termView.update(items.find((i) => i.address === termView.address) ?? null);
       }
     },
     onConnection(on) {

@@ -52,6 +52,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .st-working { --st: var(--blue); }
 .st-done { --st: var(--green); }
 .st-idle { --st: var(--gray); }
+.st-gone { --st: var(--line); }
+.st-gone .status-tag { color: var(--muted); }
 
 .icon { width: 18px; height: 18px; flex: none; }
 .icon-blocked { color: var(--amber); }
@@ -229,10 +231,13 @@ button, input, textarea { font: inherit; color: inherit; }
 .banner-warn { background: color-mix(in srgb, var(--amber) 14%, var(--surface)); color: var(--amber); }
 .banner-ended { background: var(--surface-2); color: var(--text); }
 
-.term-area { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--term-bg); }
-.term-area.pan { overflow-x: auto; }
+.term-area {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--term-bg);
+  scrollbar-gutter: stable;
+}
+.term-area.scroll-x { overflow-x: auto; }
 .term-wrap { overflow: hidden; }
-.term-area.pan .term-wrap { overflow: visible; width: max-content; }
+.term-area.natural .term-wrap { overflow: visible; width: max-content; }
 .term-host { width: max-content; transform-origin: 0 0; }
 .term-host .xterm { padding: 4px; }
 

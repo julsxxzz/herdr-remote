@@ -7,6 +7,8 @@ import { el, statusIcon, statusKey, STATUS_LABEL, itemName, itemDetails } from '
 const RECONNECT_MS = [1000, 2000, 5000];
 const HISTORY = 200;
 const CTRL_C_WINDOW_MS = 2000;
+// Fit never shrinks text below this; a wider terminal pans horizontally instead (ruling R14).
+const MIN_FIT_SCALE = 0.5;
 
 const KEYS = [
   ['1', '1'], ['2', '2'], ['3', '3'], ['Enter', 'enter'], ['Esc', 'esc'], ['Tab', 'tab'],
@@ -30,6 +32,7 @@ function saveFitPref(fit) {
 
 export function openTermView({ root, address, item }) {
   let current = item;
+  let gone = false;
   let term = null;
   let ws = null;
   let closed = false;
@@ -50,11 +53,14 @@ export function openTermView({ root, address, item }) {
     fitBtn);
 
   function renderHeader() {
-    if (!current) {
-      headTop.replaceChildren(el('span', { class: 'name', text: address }));
+    if (gone || !current) {
+      header.className = `term-head ${gone ? 'st-gone' : 'st-idle'}`;
+      headTop.replaceChildren(
+        el('span', { class: 'name', text: current ? itemName(current) : address }),
+        gone ? el('span', { class: 'status-tag', text: 'Not running' }) : null,
+      );
       headDetails.replaceChildren();
-      headMeta.replaceChildren();
-      header.className = 'term-head st-idle';
+      headMeta.replaceChildren(el('span', { class: 'tab', text: current?.tab || '' }), el('span', { class: 'addr', text: address }));
       return;
     }
     const key = statusKey(current.status);
@@ -82,18 +88,22 @@ export function openTermView({ root, address, item }) {
 
   function layout() {
     if (!term?.element) return;
-    const screen = term.element.querySelector('.xterm-screen');
-    if (!screen) return;
-    const w = screen.offsetWidth;
+    // .xterm includes its padding, so the fitted width matches the area exactly.
+    const w = term.element.offsetWidth;
     const h = term.element.offsetHeight;
     if (!w || !h) return;
-    area.classList.toggle('pan', !fit);
+    area.classList.toggle('natural', !fit);
     if (fit) {
-      const scale = area.clientWidth / w;
+      const fitScale = area.clientWidth / w;
+      const scale = Math.max(fitScale, MIN_FIT_SCALE);
+      area.classList.toggle('scroll-x', scale > fitScale);
       host.style.transform = `scale(${scale})`;
+      wrap.style.width = `${Math.floor(w * scale)}px`;
       wrap.style.height = `${Math.ceil(h * scale)}px`;
     } else {
+      area.classList.add('scroll-x');
       host.style.transform = '';
+      wrap.style.width = '';
       wrap.style.height = '';
     }
   }
@@ -120,8 +130,7 @@ export function openTermView({ root, address, item }) {
         theme: THEME,
       });
       term.open(host);
-      const screen = term.element.querySelector('.xterm-screen');
-      if (screen) resizeObserver.observe(screen);
+      resizeObserver.observe(term.element);
     } else {
       if (resetOnSize) term.reset();
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
@@ -293,7 +302,7 @@ export function openTermView({ root, address, item }) {
   return {
     address,
     update(next) {
-      if (next) current = next;
+      if (next) { current = next; gone = false; } else gone = true;
       renderHeader();
     },
     close() {
