@@ -27,6 +27,7 @@ export function attachWebSockets(server, {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_CLIENT_MESSAGE });
   let observers = 0;
   const cleanups = new Set();
+  const listSenders = new Set();
 
   function listSocket(ws) {
     const clientId = randomUUID();
@@ -46,6 +47,8 @@ export function attachWebSockets(server, {
     };
 
     send();
+    const sendNow = () => { clearTimeout(timer); send(); };
+    listSenders.add(sendNow);
     store.on('changed', onChanged);
     ws.on('message', (data, isBinary) => {
       if (isBinary) return;
@@ -57,6 +60,7 @@ export function attachWebSockets(server, {
     });
     ws.on('close', () => {
       store.off('changed', onChanged);
+      listSenders.delete(sendNow);
       clearTimeout(timer);
       notifier?.setVisible(clientId, null);
     });
@@ -77,7 +81,8 @@ export function attachWebSockets(server, {
     let child;
     const onChanged = () => {
       const cur = store.get(address);
-      if (!cur || ws.readyState !== ws.OPEN) return;
+      if (!cur) return end(); // finished or removed while watched
+      if (ws.readyState !== ws.OPEN) return;
       if (cur.cols !== lastCols || cur.rows !== lastRows) {
         lastCols = cur.cols;
         lastRows = cur.rows;
@@ -168,6 +173,12 @@ export function attachWebSockets(server, {
   server.on('upgrade', onUpgrade);
 
   return {
+    broadcastList() {
+      for (const sendNow of listSenders) sendNow();
+    },
+    disconnectAll() {
+      for (const ws of wss.clients) ws.close(4401, 'signed out');
+    },
     close() {
       clearInterval(heartbeat);
       server.off('upgrade', onUpgrade);

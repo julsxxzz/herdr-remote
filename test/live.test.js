@@ -106,6 +106,7 @@ test('upgrade refused without session cookie, with wrong Origin, or wrong identi
   assert.equal(await rejected('/ws/list', { ...good, origin: 'https://evil.example' }), 403);
   assert.equal(await rejected('/ws/list', { ...good, 'tailscale-user-login': 'x@example.com' }), 403);
   assert.equal(await rejected('/ws/other', good), 404);
+  assert.equal(await rejected('/ws/list', { cookie: good.cookie, 'tailscale-user-login': LOGIN }), 403);
 });
 
 test('/ws/list sends list, re-sends on change, relays visible, clears on close', async () => {
@@ -155,7 +156,7 @@ test('closing the socket kills the observe child', async () => {
   await waitFor(() => c.msgs.length >= 2);
   assert.equal(children.length, 1);
   c.ws.close();
-  await waitFor(() => children[0].exitCode !== null || children[0].killed, 2000);
+  await waitFor(() => children[0].exitCode !== null || children[0].signalCode !== null, 2000);
 });
 
 test('attach exit sends ended and closes 1000', async () => {
@@ -214,7 +215,7 @@ test('heartbeat terminates a /ws/term client that stops ponging and kills its ch
   const c = open('/ws/term?address=t1', { autoPong: false });
   await waitFor(() => c.msgs.length >= 2);
   assert.equal(children.length, 1);
-  await waitFor(() => children[0].exitCode !== null || children[0].killed, 3000);
+  await waitFor(() => children[0].exitCode !== null || children[0].signalCode !== null, 3000);
   await waitFor(() => c.closed !== null);
 });
 
@@ -227,4 +228,47 @@ test('heartbeat terminates a silent /ws/list client and clears visibility; live 
   assert.ok(visible.some(([, a]) => a === null));
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(alive.closed, null);
+});
+
+const dead = (c) => c.exitCode !== null || c.signalCode !== null;
+
+test('finished terminal while watched: ended, close 1000, child killed', async () => {
+  const c = open('/ws/term?address=t1');
+  await waitFor(() => c.msgs.length >= 2);
+  store.apply({ type: 'finished', terminal: 't1', seq: 2, data: { exit_code: 0, finished_ms: 1, reason: 'exit', signal: null } });
+  await waitFor(() => c.closed !== null);
+  assert.equal(c.closed, 1000);
+  assert.ok(c.msgs.some((m) => m.type === 'ended'));
+  await waitFor(() => dead(children[0]), 3000);
+});
+
+test('removed terminal while watched: ended, close 1000, child killed', async () => {
+  const c = open('/ws/term?address=t1');
+  await waitFor(() => c.msgs.length >= 2);
+  store.apply({ type: 'removed', terminal: 't1', seq: 2, data: {} });
+  await waitFor(() => c.closed !== null);
+  assert.equal(c.closed, 1000);
+  assert.ok(c.msgs.some((m) => m.type === 'ended'));
+  await waitFor(() => dead(children[0]), 3000);
+});
+
+test('broadcastList immediately re-sends the list with current deskMode', async () => {
+  const c = open('/ws/list');
+  await waitFor(() => c.msgs.length === 1);
+  state.deskMode = !state.deskMode;
+  live.broadcastList();
+  await waitFor(() => c.msgs.length === 2);
+  assert.equal(c.msgs[1].deskMode, state.deskMode);
+});
+
+test('disconnectAll closes list and term sockets with 4401 and kills the child', async () => {
+  const l = open('/ws/list');
+  const t = open('/ws/term?address=t1');
+  await waitFor(() => l.msgs.length === 1 && t.msgs.length >= 2);
+  live.disconnectAll();
+  await waitFor(() => l.closed !== null && t.closed !== null);
+  assert.equal(l.closed, 4401);
+  assert.equal(t.closed, 4401);
+  await waitFor(() => dead(children[0]), 3000);
+  assert.equal(visible.at(-1)[1], null);
 });
