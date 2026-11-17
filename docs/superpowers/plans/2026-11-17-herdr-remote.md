@@ -194,6 +194,26 @@ test/
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS.
 - [ ] **Step 5: Commit** `feat: identity, PIN, session and rate-limit auth`.
 
+### Task 5b: Herdr details on list items (owner request, 2026-11-17)
+
+**Files:**
+- Modify: `src/terminals.js` (`toListItem`), `test/terminals.test.js`
+
+**Interfaces:**
+- Consumes: Terminal shape from "Facts about hc" (`title`, `status.{title,msg,progress,kind}`, `records` = map of `{app, state, title}`, `labels['herdr.seen']`, `turn`).
+- Produces: `toListItem(t)` gains these keys (existing keys unchanged):
+  - `title`: `t.title || null`
+  - `activity`: `t.status?.title || Object.values(t.records ?? {}).find(r => r?.title)?.title || null`
+  - `message`: `t.status?.msg || null`
+  - `progress`: integer 0–100 from `t.status?.progress`, else `null` (clamp; non-numbers → `null`)
+  - `unread`: `true` only when `labels['herdr.seen']` is present and `Number(labels['herdr.seen']) < t.turn`; missing label or non-numeric → `false`. Read-only: nothing writes `herdr.seen`.
+  - (`kind` already exists: permission / question / auth.)
+- Push payloads must NOT gain any of these (spec §2 anti-goal: no screen text); Task 8's payload-keys test enforces it.
+
+- [ ] **Step 1: Write failing tests**: a terminal with `title:'Ship issue 7'`, `records:{a:{app:'claude-code',state:'working',title:'Analyse issue 7'}}`, `status:{app:'claude-code',state:'working',progress:40,msg:'Running tests'}` → `{title:'Ship issue 7', activity:'Analyse issue 7', message:'Running tests', progress:40}`; `status.title` wins over records; `title:''` → `null`; `progress:250` → `100`, `'x'` → `null`; `herdr.seen:'3'`, `turn:4` → `unread:true`; `'4'`/`4` → `false`; no label → `false`; a `title` event and a `status` event (with `records`) applied via `store.apply` update `get()` accordingly.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** `npm test` → PASS.
+- [ ] **Step 5: Commit** `feat: herdr title, activity, progress and unread on list items`.
+
 ### Task 6: HTTP server (REST + static)
 
 **Files:**
@@ -280,7 +300,7 @@ test/
 - Produces: `startServer({home, log = console}) → Promise<{server, stop()}>` in `src/main.js` — loads config/state, exits with `Run "npm run setup" first: <errors>` if `validateConfig` fails, resolves `hc` from `config.hcPath ?? 'hc'`, wires store → `notifier.onTransition`, listens on `config.bind:config.port`, `stop()` kills watcher and all observers.
 - Frontend (ES modules, no build; xterm loaded via `<script src="/vendor/xterm.js">`, global `Terminal`):
   - Hash routes: `#/` list, `#/t/<address>` live view; login screen whenever `/api/session` says not signed in or any call returns 401.
-  - **List:** one `/ws/list` socket for the whole app (reconnect 1/2/5 s; header dot "● live" / "○ offline"). Sections NEEDS YOU (blocked, error) / WORKING / DONE / IDLE, each row `space · agent`, tab, address, status icon; tap opens view. Desk-mode toggle in footer.
+  - **List:** one `/ws/list` socket for the whole app (reconnect 1/2/5 s; header dot "● live" / "○ offline"). Sections NEEDS YOU (blocked, error) / WORKING / DONE / IDLE, each row `space · agent`, tab, address, status icon, plus (Task 5b) a second line with `activity` (else `title`), the blocked `kind` as a label (Permission / Question / Sign-in), `message` and a thin `progress` bar when present, and an unread dot when `unread`; tap opens view. The live-view header shows the same title/activity/status. Desk-mode toggle in footer.
   - **Live view:** `new Terminal({cols, rows, disableStdin: true, scrollback: 1000, fontSize: 14, cursorBlink: false})`; on `size` → `term.resize`; binary → `term.write(new Uint8Array(buf))`; on (re)connect `term.reset()` first; `ended` → banner "Session ended". **Fit/100% toggle:** fit = CSS `transform: scale(containerWidth / naturalWidth)` with `transform-origin: 0 0` and the wrapper height set to the scaled height, recomputed on `resize`/`size`; 100% = no transform, `overflow-x: auto`.
   - **Key bar:** `1 2 3 Enter Esc Tab ⇧Tab ↑ ↓ ← → Ctrl+C` → keys `1 2 3 enter esc tab shift+tab up down left right ctrl+c`; Ctrl+C needs a second tap within 2 s (button label changes to "Tap again"). Min tap target 44 px.
   - **Reply box:** textarea + Send → `/send`; on 409 show the server's error inline plus the hint "Answer the dialog with the keys above".
