@@ -101,7 +101,7 @@ export async function claimPidFile(home, {
   return { ok: true, release };
 }
 
-const staleHint = (home) => `If herdr-remote isn't actually running, delete ${pidFilePath(home)}`;
+const staleHint = (home) => `If herdr-remote isn't actually running, delete ${path.resolve(pidFilePath(home))}`;
 
 export const alreadyRunningMessage = (pid, home) =>
   `herdr-remote is already running (pid ${pid}) — use "herdr-remote stop" first. `

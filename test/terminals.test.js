@@ -282,3 +282,33 @@ test('B18: non-finite progress is null; blank herdr.seen counts as missing', () 
   assert.equal(u('  '), false);
   assert.equal(u(' 3 '), true);
 });
+
+// Real hc turn events carry the AGENT status in data.state, never the terminal lifecycle state.
+for (const agentState of ['blocked', 'done', 'working']) {
+  test(`turn event with data.state "${agentState}" keeps the terminal live and takes the turn`, () => {
+    const s = new TerminalStore();
+    s.reset({ seq: 1, terminals: [claude('t1', 'idle', 'demo / 1')] });
+    s.apply({ type: 'turn', terminal: 't1', seq: 2, data: { state: agentState, turn: 1 } });
+    assert.equal(s.list().length, 1);
+    assert.equal(s.get('t1').turn, 1);
+    assert.equal(s.get('t1').status, 'idle'); // status comes from the status event only
+  });
+}
+
+for (const type of ['lost', 'restarted', 'keep']) {
+  test(`${type} event carrying data.state does not remove a live terminal`, () => {
+    const s = new TerminalStore();
+    s.reset({ seq: 1, terminals: [claude('t1', 'done', 'demo / 1')] });
+    s.apply({ type, terminal: 't1', seq: 2, data: { state: 'x' } });
+    assert.ok(s.get('t1'));
+  });
+}
+
+test('finished still removes a live terminal; created still sets the full record', () => {
+  const s = new TerminalStore();
+  s.reset({ seq: 1, terminals: [claude('t1', 'done', 'demo / 1')] });
+  s.apply({ type: 'finished', terminal: 't1', seq: 2, data: { state: 'finished' } });
+  assert.equal(s.get('t1'), null);
+  s.apply({ type: 'created', terminal: 't9', seq: 3, data: claude('t9', 'working', 'x / 1') });
+  assert.equal(s.get('t9').status, 'working');
+});

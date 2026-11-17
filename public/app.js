@@ -176,7 +176,10 @@ function startApp() {
   syncPushSubscription();
 }
 
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => {
+  document.querySelector('dialog.sheet')?.close(); // a route change (e.g. a tapped notification) dismisses Settings
+  route();
+});
 document.addEventListener('visibilitychange', reportVisibility);
 
 async function boot() {

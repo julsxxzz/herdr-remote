@@ -108,8 +108,12 @@ export class TerminalStore extends EventEmitter {
       if (!prev) return;
       this._records.delete(terminal);
     } else if (prev) {
-      const next = { ...prev, ...data };
-      if (type === 'labels') next.labels = { ...prev.labels, ...data.labels };
+      // The lifecycle `state` is only set by created/reset/finished. In other events data.state is
+      // something else (e.g. the agent status in `turn`), so it must never reach the record.
+      const { state: _ignored, ...rest } = data ?? {};
+      const patch = type === 'turn' ? { turn: rest.turn } : rest;
+      const next = { ...prev, ...patch };
+      if (type === 'labels') next.labels = { ...prev.labels, ...rest.labels };
       if (type === 'finished') next.state = 'finished';
       this._records.set(terminal, next);
       if (isLive(prev) && isLive(next)) from = toListItem(prev).status;

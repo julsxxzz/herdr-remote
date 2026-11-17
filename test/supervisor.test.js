@@ -311,3 +311,8 @@ test('round1: a kill() that fails with a synchronous error is not retried in a l
     await sup.stop();
   }
 });
+
+test('the stale-pid hint prints an absolute path even for a relative --home', () => {
+  const msg = alreadyRunningMessage(424242, 'rel-home');
+  assert.ok(msg.includes(`delete ${path.resolve('rel-home', 'server.pid')}`), msg);
+});

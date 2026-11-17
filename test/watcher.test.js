@@ -282,3 +282,16 @@ test('round1: a throwing store listener during an ls poll is not reported as "hc
   assert.equal(warnings.some((m) => m.startsWith('hc ls failed')), false, warnings.join(' | '));
   assert.equal(store.get('t7')?.status, 'working');
 });
+
+test('real hc turn event (data.state is the agent status) keeps the terminal listed', async () => {
+  put('events.jsonl', lines(
+    { channel: null, seq: 10, terminals: [term('t1g', 'working')] },
+    ev('turn', 't1g', 11, { state: 'blocked', turn: 2 }),
+    ev('turn', 't1g', 12, { state: 'done', turn: 3 }),
+  ));
+  const store = new TerminalStore();
+  start(store);
+  await until(() => store.seq === 12);
+  assert.equal(store.list().length, 1);
+  assert.equal(store.get('t1g').turn, 3);
+});
