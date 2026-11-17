@@ -131,8 +131,14 @@ test('M1: a silent events child (no line for stallMs) is killed and respawned', 
   put('events.jsonl', lines({ channel: null, seq: 1, terminals: [term('t1', 'idle')] }));
   put('ls.json', LS_ONE);
   const store = new TerminalStore();
+  // Count spawns here, not in calls.jsonl: the stall timer runs from spawn, so a child whose node
+  // startup takes longer than stallMs is killed before the fake hc can log its call.
+  const spawned = [];
+  const real = hc;
+  hc = { ...real, events: () => { const c = real.events(); spawned.push(c); return c; } };
   start(store, { stallMs: 150 });
-  await until(() => eventsCalls() >= 2, 2000);
+  await until(() => spawned.length >= 2, 2000);
+  await until(() => spawned[0].exitCode !== null || spawned[0].signalCode !== null, 2000);
 });
 
 test('M1: a healthy feed (lines within stallMs) is not restarted', async () => {
