@@ -68,7 +68,7 @@ export function taskCommands({ nodePath, cliPath, home, userId = defaultUserId()
   return {
     vbs: `CreateObject("WScript.Shell").Run """${nodePath}"" ""${cliPath}"" start --home ""${absHome}""", 0, False\n`,
     vbsPath: vbsPathFor(absHome),
-    xml: taskXml({ nodePath, cliPath, home: absHome, userId }),
+    xml: taskXml({ home: absHome, userId }),
     xmlPath,
     create: ['schtasks', '/Create', '/F', '/TN', TASK_NAME, '/XML', xmlPath],
     remove: ['schtasks', '/Delete', '/F', '/TN', TASK_NAME],
@@ -94,12 +94,15 @@ export function runCommand(cmd, args) {
   });
 }
 
+const utf16le = (text) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+
 export async function installTask({ home, nodePath = process.execPath, cliPath, exec = runCommand, userId }) {
   const t = taskCommands({ nodePath, cliPath, home, userId });
   fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(path.join(home, VBS_NAME), t.vbs);
-  // schtasks /XML requires UTF-16 (little-endian, with BOM).
-  fs.writeFileSync(path.join(home, XML_NAME), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(t.xml, 'utf16le')]));
+  // Both as UTF-16LE with BOM: schtasks /XML requires it, and wscript would read a BOM-less .vbs in
+  // the ANSI codepage (breaking a non-ASCII home or node path).
+  fs.writeFileSync(path.join(home, VBS_NAME), utf16le(t.vbs));
+  fs.writeFileSync(path.join(home, XML_NAME), utf16le(t.xml));
   const r = await exec(t.create[0], t.create.slice(1));
   if (r.code !== 0) throw new Error(`schtasks create failed: ${(r.stderr || r.stdout).trim()}`);
 }

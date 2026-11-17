@@ -14,7 +14,7 @@ test('taskCommands: argv arrays and vbs content', () => {
   assert.equal(t.xmlPath, 'C:\\h\\herdr-remote-task.xml');
   assert.deepEqual(t.create, ['schtasks', '/Create', '/F', '/TN', 'herdr-remote', '/XML', 'C:\\h\\herdr-remote-task.xml']);
   assert.deepEqual(t.remove, ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
-  assert.equal(t.xml, taskXml({ nodePath: 'C:\\node\\node.exe', cliPath: 'C:\\app\\src\\cli.js', home: 'C:\\h', userId: USER }));
+  assert.equal(t.xml, taskXml({ home: 'C:\\h', userId: USER }));
 });
 
 test('taskCommands: paths with spaces stay quoted', () => {
@@ -32,7 +32,7 @@ test('taskCommands: home is made absolute', () => {
 const tag = (xml, name) => [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, 'g'))].map((m) => m[1]);
 
 test('B24: taskXml triggers on this user\'s logon only and never times out', () => {
-  const xml = taskXml({ nodePath: 'C:\\n\\node.exe', cliPath: 'C:\\a\\cli.js', home: 'C:\\h', userId: USER });
+  const xml = taskXml({ home: 'C:\\h', userId: USER });
   assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-16"\?>/);
   assert.match(xml, /<Task version="1\.2" xmlns="http:\/\/schemas\.microsoft\.com\/windows\/2004\/02\/mit\/task">/);
   assert.match(xml, /<LogonTrigger>\s*<Enabled>true<\/Enabled>\s*<UserId>DEMO-PC\\demo<\/UserId>\s*<\/LogonTrigger>/);
@@ -51,7 +51,7 @@ test('B24: taskXml triggers on this user\'s logon only and never times out', () 
 });
 
 test('B24: every interpolated value is XML-escaped', () => {
-  const xml = taskXml({ nodePath: 'C:\\n\\node.exe', cliPath: 'C:\\a\\cli.js', home: 'C:\\R&D <x> \'q\'\\h', userId: 'D&D\\<o\'"x>' });
+  const xml = taskXml({ home: 'C:\\R&D <x> \'q\'\\h', userId: 'D&D\\<o\'"x>' });
   assert.deepEqual(tag(xml, 'Arguments'), ['&quot;C:\\R&amp;D &lt;x&gt; &apos;q&apos;\\h\\start-hidden.vbs&quot;']);
   assert.deepEqual(tag(xml, 'UserId'), ['D&amp;D\\&lt;o&apos;&quot;x&gt;', 'D&amp;D\\&lt;o&apos;&quot;x&gt;']);
   assert.ok(!/&(?!amp;|lt;|gt;|quot;|apos;)/.test(xml));
@@ -76,7 +76,9 @@ test('B24: installTask writes the vbs and a UTF-16LE (BOM) xml, then runs schtas
   assert.ok(text.startsWith('<?xml version="1.0" encoding="UTF-16"?>'));
   assert.ok(text.includes('<UserId>DEMO-PC\\demo</UserId>'));
   assert.ok(text.includes('R&amp;D home'));
-  assert.ok(fs.existsSync(path.join(home, 'start-hidden.vbs')));
+  const vbs = fs.readFileSync(path.join(home, 'start-hidden.vbs'));
+  assert.deepEqual([...vbs.subarray(0, 2)], [0xff, 0xfe]); // wscript reads BOM-less files as ANSI
+  assert.equal(vbs.subarray(2).toString('utf16le'), taskCommands({ nodePath: 'C:\\n\\node.exe', cliPath: 'C:\\a\\cli.js', home, userId: USER }).vbs);
   await uninstallTask({ home, cliPath: 'C:\\a\\cli.js', exec });
   assert.deepEqual(calls.at(-1), ['schtasks', '/Delete', '/F', '/TN', 'herdr-remote']);
   assert.equal(fs.existsSync(xmlPath), false);
