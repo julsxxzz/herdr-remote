@@ -60,9 +60,12 @@ async function foreground(home) {
   let shutdown = null;
   let stopRequested = false; // a stop request that arrived before the server was up
   if (!supervised) {
-    const claim = claimPidFile(home, { onStopRequest: () => (shutdown ? shutdown() : (stopRequested = true)) });
+    const claim = await claimPidFile(home, {
+      onStopRequest: () => (shutdown ? shutdown() : (stopRequested = true)),
+      log: (m) => console.log(m),
+    });
     if (!claim.ok) {
-      console.error(alreadyRunningMessage(claim.pid));
+      console.error(alreadyRunningMessage(claim.pid, home));
       process.exit(EXIT_SETUP_REQUIRED);
     }
     process.on('exit', claim.release);
@@ -109,8 +112,11 @@ async function main(argv) {
       process.once('SIGTERM', quit);
       const r = await sup.done;
       if (r.reason === 'already-running') {
-        console.error(alreadyRunningMessage(r.pid));
+        console.error(alreadyRunningMessage(r.pid, home));
         process.exitCode = EXIT_SETUP_REQUIRED;
+      } else if (r.reason === 'error') {
+        console.error(`herdr-remote could not start: ${r.message}`);
+        process.exitCode = 1;
       } else if (r.reason === 'setup-required') {
         console.error('herdr-remote could not start: it needs setup ("npm run setup") or its port is already in use (see logs/server.log).');
         process.exitCode = EXIT_SETUP_REQUIRED;

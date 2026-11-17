@@ -5,9 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { execFileSync, spawnSync } from 'node:child_process';
+import net from 'node:net';
+import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { superviseServer, stopRunning, pidFilePath, EXIT_SETUP_REQUIRED } from '../src/supervisor.js';
+import {
+  superviseServer, stopRunning, pidFilePath, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
+} from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-sup-'));
 const until = async (fn, ms = 4000) => {
@@ -95,7 +98,7 @@ test('I3: supervisor writes server.pid; stopRunning stops it and removes the fil
   fs.writeFileSync(script, `setInterval(() => {}, 1000);
 process.on('disconnect', () => process.exit(0));`);
   const sup = superviseServer({ home, entry: script, args: [], controlPollMs: 50 });
-  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8').trim(), String(process.pid));
+  assert.ok(await until(() => fs.existsSync(pidFilePath(home)) && fs.readFileSync(pidFilePath(home), 'utf8').trim() === String(process.pid)));
   assert.equal(await stopRunning({ home, pollMs: 25 }), 'stopped');
   assert.equal((await sup.done).reason, 'stopped');
   assert.equal(fs.existsSync(pidFilePath(home)), false);
@@ -137,7 +140,7 @@ test('B1: a second supervisor refuses while server.pid holds a live foreign pid,
   fs.writeFileSync(script, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'x');`);
   fs.writeFileSync(pidFilePath(home), '424242');
   fs.writeFileSync(stopFilePath(home), 'stop'); // a pending request for the running one must survive too
-  const sup = superviseServer({ home, entry: script, args: [], isAlive: (pid) => pid === 424242 });
+  const sup = superviseServer({ home, entry: script, args: [], isAlive: (pid) => pid === 424242, portAnswers: async () => true });
   const r = await sup.done;
   assert.deepEqual(r, { reason: 'already-running', pid: 424242 });
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242');
@@ -145,15 +148,75 @@ test('B1: a second supervisor refuses while server.pid holds a live foreign pid,
   assert.equal(fs.existsSync(marker), false);
 });
 
-test('B1: "herdr-remote start" exits 78 with a clear line when another live process owns server.pid', () => {
+// Makes a pid file look like it was left behind long ago (e.g. before a reboot).
+const age = (file) => { const old = new Date(Date.now() - 3600_000); fs.utimesSync(file, old, old); };
+
+test('R21: a live foreign pid whose port does not answer is a stale file: taken over and logged', async () => {
   const home = tmp();
-  const foreign = String(process.pid); // the test runner: alive, and not the CLI process
-  fs.writeFileSync(pidFilePath(home), foreign);
-  const r = spawnSync(process.execPath, [CLI, 'start', '--home', home], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
-  assert.equal(r.status, EXIT_SETUP_REQUIRED, r.stderr);
-  assert.ok(r.stderr.includes(`already running (pid ${foreign})`), r.stderr);
-  assert.ok(r.stderr.includes('herdr-remote stop'), r.stderr);
-  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), foreign);
+  const script = path.join(home, 'ok.mjs');
+  fs.writeFileSync(script, '');
+  fs.writeFileSync(pidFilePath(home), '424242');
+  age(pidFilePath(home));
+  const probed = [];
+  const sup = superviseServer({
+    home, entry: script, args: [], port: 4999,
+    isAlive: () => true, portAnswers: async (p) => { probed.push(p); return false; },
+  });
+  assert.equal((await sup.done).reason, 'exited');
+  assert.deepEqual(probed, [4999]);
+  assert.match(fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8'), /stale pid file replaced \(pid 424242\)/);
+});
+
+test('R21: a live foreign pid whose port answers is refused with an actionable message', async () => {
+  const home = tmp();
+  fs.writeFileSync(pidFilePath(home), '424242');
+  age(pidFilePath(home));
+  const r = await claimPidFile(home, { isAlive: () => true, portAnswers: async () => true, port: 4999 });
+  assert.deepEqual(r, { ok: false, pid: 424242 });
+  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242');
+  const msg = alreadyRunningMessage(424242, home);
+  assert.ok(msg.includes('herdr-remote stop'), msg);
+  assert.ok(msg.includes(`if herdr-remote isn't actually running, delete ${pidFilePath(home)}`), msg);
+});
+
+test('R21: a freshly written pid file of a live process is respected even before its port answers', async () => {
+  const home = tmp();
+  fs.writeFileSync(pidFilePath(home), '424242'); // another start that just claimed it
+  const r = await claimPidFile(home, { isAlive: () => true, portAnswers: async () => false, port: 4999 });
+  assert.deepEqual(r, { ok: false, pid: 424242 });
+});
+
+test('R21: claimPidFile creates the file exclusively and releases only its own', async () => {
+  const home = tmp();
+  const r = await claimPidFile(home, { port: 4999, portAnswers: async () => assert.fail('no probe without a holder') });
+  assert.equal(r.ok, true);
+  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), String(process.pid));
+  fs.writeFileSync(pidFilePath(home), '424242'); // someone else took over
+  r.release();
+  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242');
+});
+
+test('B1/R21: "herdr-remote start" exits 78 with a clear line when a live process owns server.pid and the port answers', async () => {
+  const home = tmp();
+  const blocker = net.createServer((s) => s.destroy());
+  await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
+  try {
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ port: blocker.address().port }));
+    const foreign = String(process.pid); // the test runner: alive, and not the CLI process
+    fs.writeFileSync(pidFilePath(home), foreign);
+    age(pidFilePath(home));
+    const r = await new Promise((resolve) => {
+      execFile(process.execPath, [CLI, 'start', '--home', home], { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+        (err, stdout, stderr) => resolve({ status: err ? err.code : 0, stderr }));
+    });
+    assert.equal(r.status, EXIT_SETUP_REQUIRED, r.stderr);
+    assert.ok(r.stderr.includes(`already running (pid ${foreign})`), r.stderr);
+    assert.ok(r.stderr.includes('herdr-remote stop'), r.stderr);
+    assert.ok(r.stderr.includes(`delete ${pidFilePath(home)}`), r.stderr);
+    assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), foreign);
+  } finally {
+    await new Promise((r) => blocker.close(r));
+  }
 });
 
 test('B1: a stale pid file (dead pid) does not block a start', async () => {
@@ -169,7 +232,7 @@ test('B3: stopRunning timeout removes the stop request and names the pid', async
   const home = tmp();
   fs.writeFileSync(pidFilePath(home), '424242');
   const r = await stopRunning({ home, waitMs: 100, pollMs: 20, isAlive: () => true });
-  assert.equal(r, 'timeout — 424242 did not stop');
+  assert.equal(r, `timeout — 424242 did not stop. If herdr-remote isn't actually running, delete ${pidFilePath(home)}`);
   assert.equal(fs.existsSync(stopFilePath(home)), false);
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), '424242'); // never killed, never touched
 });
@@ -195,6 +258,7 @@ test('B21: a child error while it is still alive kills it and restarts only afte
   const forkImpl = () => { const c = stubChild({ exitOnKill: children.length > 0 }); children.push(c); return c; };
   const sup = superviseServer({ home, entry: 'x', args: [], backoffMs: [20], forkImpl });
   try {
+    assert.ok(await until(() => children.length === 1));
     children[0].emit('error', new Error('kill EPERM'));
     assert.equal(children[0].kills, 1);
     await new Promise((r) => setTimeout(r, 200)); // well past the 20 ms backoff
@@ -212,8 +276,36 @@ test('B21: a spawn error (no pid) is still treated as an end and retried', async
   const forkImpl = () => { const c = stubChild({ exitOnKill: true }); children.push(c); return c; };
   const sup = superviseServer({ home, entry: 'x', args: [], backoffMs: [20], forkImpl });
   try {
+    assert.ok(await until(() => children.length === 1));
     children[0].pid = undefined;
     children[0].emit('error', new Error('spawn ENOENT'));
+    assert.ok(await until(() => children.length === 2));
+  } finally {
+    await sup.stop();
+  }
+});
+
+test('round1: a kill() that fails with a synchronous error is not retried in a loop', async () => {
+  const home = tmp();
+  const children = [];
+  const forkImpl = () => {
+    const c = stubChild({ exitOnKill: children.length > 0 });
+    if (children.length === 0) {
+      // Like Node on EPERM: kill() emits 'error' synchronously (syscall 'kill').
+      c.kill = () => { c.kills++; c.emit('error', Object.assign(new Error('kill EPERM'), { code: 'EPERM', syscall: 'kill' })); return false; };
+    }
+    children.push(c);
+    return c;
+  };
+  const sup = superviseServer({ home, entry: 'x', args: [], backoffMs: [20], forkImpl });
+  try {
+    await until(() => children.length === 1);
+    children[0].emit('error', new Error('pipe broke'));
+    assert.ok(children[0].kills >= 1 && children[0].kills <= 2, `kills: ${children[0].kills}`);
+    const log = fs.readFileSync(path.join(home, 'logs', 'server.log'), 'utf8');
+    assert.ok((log.match(/child error/g) ?? []).length <= 2, log);
+    assert.equal(children.length, 1); // still alive: no second server
+    children[0].exit(1);
     assert.ok(await until(() => children.length === 2));
   } finally {
     await sup.stop();
