@@ -4,10 +4,22 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { SERVER_NODE_FLAGS, EXIT_SETUP_REQUIRED } from './supervisor.js';
 
-const TASK_NAME = 'remote-for-herdr';
+export const TASK_NAME = 'remote-for-herdr';
 const VBS_NAME = 'start-hidden.vbs';
 const STOP_NAME = 'server.stop'; // the stop request file, see stopRunning in supervisor.js
 const XML_NAME = 'remote-for-herdr-task.xml';
+// The task and its XML file as herdr-remote (the project's old name) created them.
+export const LEGACY_TASK_NAME = 'herdr-remote';
+const LEGACY_XML_NAME = 'herdr-remote-task.xml';
+
+// True when cliPath lies in npx's temporary package cache (<npm-cache>\_npx\<hash>\...), which npm
+// may delete at any time: a start-at-login task pointing there would break later.
+export const isNpxCachePath = (p) => /[\\/]_npx[\\/]/i.test(String(p ?? ''));
+
+export const NPX_CACHE_HINT = 'remote-for-herdr is running from npx\'s temporary cache, which npm may delete, '
+  + 'so start-at-login is not installed from here. Install it for good, then run setup again:\n'
+  + '  npm i -g remote-for-herdr\n'
+  + '  remote-for-herdr setup';
 
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]
@@ -120,6 +132,10 @@ export function taskCommands({ nodePath, cliPath, home, userId = defaultUserId()
     create: ['schtasks', '/Create', '/F', '/TN', TASK_NAME, '/XML', xmlPath],
     end: ['schtasks', '/End', '/TN', TASK_NAME],
     remove: ['schtasks', '/Delete', '/F', '/TN', TASK_NAME],
+    run: ['schtasks', '/Run', '/TN', TASK_NAME],
+    query: ['schtasks', '/Query', '/TN', TASK_NAME],
+    legacyEnd: ['schtasks', '/End', '/TN', LEGACY_TASK_NAME],
+    legacyRemove: ['schtasks', '/Delete', '/F', '/TN', LEGACY_TASK_NAME],
   };
 }
 
@@ -144,9 +160,28 @@ export function runCommand(cmd, args) {
 
 const utf16le = (text) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
 
-export async function installTask({ home, nodePath = process.execPath, cliPath, exec = runCommand, userId }) {
+// Removes what herdr-remote (the old name) installed: its task (its launcher ended first) and its
+// launcher files in each given folder. Errors are ignored (usually: there is no old task).
+async function removeLegacyTask({ t, exec, dirs }) {
+  await exec(t.legacyEnd[0], t.legacyEnd.slice(1));
+  const r = await exec(t.legacyRemove[0], t.legacyRemove.slice(1));
+  for (const dir of dirs.filter(Boolean)) {
+    fs.rmSync(path.join(dir, LEGACY_XML_NAME), { force: true });
+  }
+  return r.code === 0;
+}
+
+// legacyHome: the old herdr-remote config folder, if it still exists (its launcher files are removed).
+export async function installTask({
+  home, nodePath = process.execPath, cliPath, exec = runCommand, userId, legacyHome = null,
+}) {
+  if (isNpxCachePath(cliPath)) throw Object.assign(new Error(NPX_CACHE_HINT), { code: 'NPX_CACHE' });
   const t = taskCommands({ nodePath, cliPath, home, userId });
   fs.mkdirSync(home, { recursive: true });
+  await removeLegacyTask({ t, exec, dirs: [home, legacyHome] });
+  if (legacyHome && path.resolve(legacyHome) !== path.resolve(home)) {
+    fs.rmSync(path.join(legacyHome, VBS_NAME), { force: true });
+  }
   // Both as UTF-16LE with BOM: schtasks /XML requires it, and wscript would read a BOM-less .vbs in
   // the ANSI codepage (breaking a non-ASCII home or node path).
   fs.writeFileSync(path.join(home, VBS_NAME), utf16le(t.vbs));
@@ -155,13 +190,31 @@ export async function installTask({ home, nodePath = process.execPath, cliPath, 
   if (r.code !== 0) throw new Error(`schtasks create failed: ${(r.stderr || r.stdout).trim()}`);
 }
 
-export async function uninstallTask({ home, nodePath = process.execPath, cliPath, exec = runCommand }) {
+// Removes the task under both names (remote-for-herdr and the old herdr-remote). Fails only when
+// neither could be deleted.
+export async function uninstallTask({ home, nodePath = process.execPath, cliPath, exec = runCommand, legacyHome = null }) {
   const t = taskCommands({ nodePath, cliPath, home, userId: '' });
   // End the running launcher first, so no hidden restarter outlives the task. It ends only the
   // launcher: a running server stays up until "remote-for-herdr stop". Fails when not running: ignored.
   await exec(t.end[0], t.end.slice(1));
   const r = await exec(t.remove[0], t.remove.slice(1));
+  const legacyRemoved = await removeLegacyTask({ t, exec, dirs: [home, legacyHome] });
   fs.rmSync(path.join(home, VBS_NAME), { force: true });
   fs.rmSync(path.join(home, XML_NAME), { force: true });
-  if (r.code !== 0) throw new Error(`schtasks delete failed: ${(r.stderr || r.stdout).trim()}`);
+  if (legacyHome && path.resolve(legacyHome) !== path.resolve(home)) {
+    fs.rmSync(path.join(legacyHome, VBS_NAME), { force: true });
+  }
+  if (r.code !== 0 && !legacyRemoved) throw new Error(`schtasks delete failed: ${(r.stderr || r.stdout).trim()}`);
+}
+
+// True when the start-at-login task exists (schtasks /Query succeeds).
+export async function isTaskInstalled({ exec = runCommand } = {}) {
+  const r = await exec('schtasks', ['/Query', '/TN', TASK_NAME]);
+  return r.code === 0;
+}
+
+// Starts the start-at-login task now (its launcher runs the server). Resolves { ok, message }.
+export async function runTask({ exec = runCommand } = {}) {
+  const r = await exec('schtasks', ['/Run', '/TN', TASK_NAME]);
+  return { ok: r.code === 0, message: (r.stderr || r.stdout || '').trim() };
 }
