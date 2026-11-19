@@ -6,6 +6,9 @@
 // The first tap (or Ctrl/⌘+Enter) arms and records the dialog the user saw; a second tap
 // between MIN_CONFIRM_MS and CONFIRM_MS later sends with force + that dialog as `expect`,
 // and the server refuses (409 dialog_changed) if it is no longer the same dialog.
+//
+// An empty Send (or Ctrl/⌘+Enter on an empty box) presses Enter, like the key bar's Enter key,
+// dialog or not: no confirm, and it disarms one that is armed.
 
 export const CONFIRM_MS = 2000; // the second tap must come within this window
 export const MIN_CONFIRM_MS = 400; // ...but not sooner: a double tap or bounce is not a confirm
@@ -41,6 +44,7 @@ export function initialState(item) {
     refused: false, // a plain send was refused as blocked before the list showed it
     guardUntil: 0,
     sending: false,
+    enter: false, // the request in flight is an Enter press, not a text send
     sentUntil: 0,
     notice: null, // shown and announced until the next send
     announce: null, // announced only
@@ -48,7 +52,7 @@ export function initialState(item) {
 }
 
 // Returns { state, effect }. effect is null, { type: 'arm' }, { type: 'send', force, expect? }
-// (the caller posts it, then reports back with a 'result' event), or { type: 'notice' }
+// or { type: 'enter' } (the caller posts it, then reports back with a 'result' event), or { type: 'notice' }
 // (a result the hint now explains; the caller shows no generic error for it).
 export function reduce(state, ev) {
   const s = { ...state };
@@ -72,8 +76,12 @@ export function reduce(state, ev) {
       break;
     }
     case 'submit': {
-      if (s.sending || ev.repeat || !ev.hasText || ev.now < s.guardUntil) break;
-      if (isBlocked(s)) {
+      if (s.sending || ev.repeat || ev.now < s.guardUntil) break;
+      if (!ev.hasText) {
+        if (s.refused && !isBlocked(s)) break; // waiting for the list to show the dialog: Send is off
+        s.armed = null; // a key press changes what the dialog shows
+        effect = { type: 'enter' };
+      } else if (isBlocked(s)) {
         const age = s.armed ? ev.now - s.armed.at : Infinity;
         if (age < MIN_CONFIRM_MS) break; // too soon: keep waiting for a deliberate second tap
         if (age >= CONFIRM_MS) {
@@ -92,6 +100,7 @@ export function reduce(state, ev) {
         effect = { type: 'send', force: false };
       }
       s.sending = true;
+      s.enter = effect.type === 'enter';
       s.sentUntil = 0;
       s.notice = null;
       s.announce = null;
@@ -110,8 +119,10 @@ export function reduce(state, ev) {
       if (s.guardUntil && ev.now >= s.guardUntil) s.guardUntil = 0;
       if (s.sentUntil && ev.now >= s.sentUntil) s.sentUntil = 0;
       break;
-    case 'result':
+    case 'result': {
+      const enter = s.enter;
       s.sending = false;
+      s.enter = false;
       if (ev.ok) {
         s.refused = false;
         s.sentUntil = ev.now + SENT_MS;
@@ -122,11 +133,12 @@ export function reduce(state, ev) {
       } else if (ev.kind === 'timeout') {
         s.notice = TEXT.timeout;
         effect = { type: 'notice' };
-      } else if (ev.status === 409 && ev.kind === 'blocked' && !ev.force) {
+      } else if (ev.status === 409 && ev.kind === 'blocked' && !ev.force && !enter) {
         s.refused = true;
         effect = { type: 'notice' };
       }
       break;
+    }
     default:
       break;
   }
@@ -143,7 +155,8 @@ function typingInto(expect) {
 }
 
 // What the Send button and the hint show. engaged: the reply box has focus or text.
-export function view(state, { now, engaged = false }) {
+// hasText: the box holds more than whitespace (an empty Send presses Enter, so it reads plain "Send").
+export function view(state, { now, engaged = false, hasText = true }) {
   const blocked = isBlocked(state);
   const dialog = blocked || state.refused;
   const waiting = state.refused && !blocked;
@@ -151,7 +164,7 @@ export function view(state, { now, engaged = false }) {
   if (state.sending) label = 'Sending…';
   else if (state.sentUntil && now < state.sentUntil) label = 'Sent ✓';
   else if (state.armed) label = 'Tap again to type';
-  else if (dialog) label = 'Type into dialog';
+  else if (dialog && hasText) label = 'Type into dialog';
   let hint = null;
   if (state.armed) hint = typingInto(state.armed.expect);
   else if (waiting) hint = TEXT.wait;
