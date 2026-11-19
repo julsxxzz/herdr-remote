@@ -41,16 +41,16 @@ export function windowsImageName(pid, { run = runTasklist } = {}) {
 
 const NODE_IMAGES = new Set(['node.exe', path.basename(process.execPath).toLowerCase()]);
 
-// True when a process with this pid exists and could be our server. The server (supervisor, a
-// --foreground run, or the start-at-login launcher's) always runs as node, so on Windows a live pid
-// whose image is something else is a pid reused after the server died without removing server.pid
-// (a logoff or shutdown skips cleanup; e.g. LockApp.exe got it): not ours. When the image cannot be
-// told (tasklist failed or does not list it), the pid counts as alive, as before.
 // True when a process with this pid exists (any program). Cheap: for polling a pid already known to be ours.
 export const pidAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 };
 
+// True when a process with this pid exists and could be our server. The server (supervisor, a
+// --foreground run, or the start-at-login launcher's) always runs as node, so on Windows a live pid
+// whose image is something else is a pid reused after the server died without removing server.pid
+// (a logoff or shutdown skips cleanup; e.g. LockApp.exe got it): not ours. When the image cannot be
+// told (tasklist failed or does not list it), the pid counts as alive, as before.
 // processAlive runs tasklist (a few tenths of a second), so callers that poll check it once and then
 // poll with pidAlive: a live process keeps its image.
 export const processAlive = (pid, { platform = process.platform, imageName = windowsImageName } = {}) => {
