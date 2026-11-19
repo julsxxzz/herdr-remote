@@ -578,7 +578,7 @@ export function openTermView({ root, address, item }) {
 
   function renderSend() {
     const engaged = document.activeElement === textarea || textarea.value.length > 0;
-    const v = confirm.view({ engaged });
+    const v = confirm.view({ engaged, hasText: Boolean(textarea.value.trim()) });
     sendBtn.textContent = v.label;
     sendBtn.classList.toggle('dialog', v.dialog);
     sendBtn.classList.toggle('armed', v.armed);
@@ -616,12 +616,16 @@ export function openTermView({ root, address, item }) {
     if (!controlsOn) return;
     const text = textarea.value;
     const effect = confirmDispatch({ type: 'submit', repeat, hasText: Boolean(text.trim()) });
-    if (effect?.type !== 'send') return;
+    if (effect?.type !== 'send' && effect?.type !== 'enter') return;
     clearError();
-    const body = effect.force ? { text, force: true, expect: effect.expect } : { text };
-    const r = await api(terminalPath(address, 'send'), { method: 'POST', body });
+    // An empty Send presses Enter, the same request as the key bar's Enter key.
+    const r = effect.type === 'enter'
+      ? await api(terminalPath(address, 'keys'), { method: 'POST', body: { keys: ['enter'] } })
+      : await api(terminalPath(address, 'send'), {
+        method: 'POST', body: effect.force ? { text, force: true, expect: effect.expect } : { text },
+      });
     if (closed) return;
-    if (r.ok && textarea.value === text) {
+    if (r.ok && effect.type === 'send' && textarea.value === text) {
       textarea.value = '';
       grow();
     }
@@ -633,7 +637,7 @@ export function openTermView({ root, address, item }) {
   textarea.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
       ev.preventDefault();
-      submit({ repeat: ev.repeat }); // a held Ctrl+Enter never confirms
+      submit({ repeat: ev.repeat }); // a held Ctrl+Enter never confirms, nor presses Enter again
     }
   });
   form.addEventListener('submit', (ev) => {

@@ -84,9 +84,65 @@ test('a held Ctrl+Enter (ev.repeat) never arms or confirms', () => {
   assert.deepEqual(run(working, [tap(0, { repeat: true })]).effects, [null]);
 });
 
-test('no text: nothing happens', () => {
-  assert.deepEqual(run(blocked, [tap(0, { hasText: false })]).effects, [null]);
-  assert.deepEqual(run(working, [tap(0, { hasText: false })]).effects, [null]);
+const empty = (now, extra = {}) => tap(now, { hasText: false, ...extra });
+
+test('no text: Send presses Enter, dialog or not, with no confirm', () => {
+  for (const item of [working, blocked, null]) {
+    const { state, effects } = run(item, [empty(0)]);
+    assert.deepEqual(effects, [{ type: 'enter' }], JSON.stringify(item));
+    assert.equal(state.sending, true);
+    assert.equal(state.armed, null);
+    assert.equal(view(state, { now: 0, hasText: false }).label, 'Sending…');
+  }
+});
+
+test('no text: an armed confirm is disarmed by the Enter press', () => {
+  const { state, effects } = run(blocked, [tap(0), empty(500)]);
+  assert.deepEqual(effects[1], { type: 'enter' });
+  assert.equal(state.armed, null);
+});
+
+test('no text: Sent ✓ after the Enter press, then back to Send', () => {
+  const { state } = run(blocked, [empty(0), { type: 'result', now: 300, ok: true }]);
+  assert.equal(state.sending, false);
+  assert.equal(state.enter, false);
+  assert.equal(view(state, { now: 300, hasText: false }).label, 'Sent ✓');
+  assert.equal(view(state, { now: 300 }).live, 'Sent');
+  const later = reduce(state, { type: 'tick', now: 300 + SENT_MS }).state;
+  assert.equal(view(later, { now: 300 + SENT_MS, hasText: false }).label, 'Send');
+});
+
+test('no text: a held Ctrl+Enter, a send in flight or the closed-dialog guard press nothing', () => {
+  assert.deepEqual(run(working, [empty(0, { repeat: true })]).effects, [null]);
+  assert.deepEqual(run(blocked, [empty(0, { repeat: true })]).effects, [null]);
+  assert.equal(run(working, [empty(0), empty(10)]).effects[1], null);
+  assert.equal(run(working, [tap(0), empty(10)]).effects[1], null);
+  const guarded = run(blocked, [tap(0), { type: 'item', item: working, now: 500 }, empty(600)]);
+  assert.equal(guarded.effects[2], null);
+});
+
+test('no text: nothing while waiting for the list to show a refused dialog', () => {
+  const { state } = run(working, [tap(0),
+    { type: 'result', now: 300, ok: false, status: 409, error: 'blocked', kind: 'blocked', force: false }]);
+  assert.equal(reduce(state, empty(400)).effect, null);
+});
+
+test('no text: a failed Enter press never switches to dialog mode; a timeout still says so', () => {
+  const refused = run(working, [empty(0),
+    { type: 'result', now: 300, ok: false, status: 409, error: 'blocked', kind: 'blocked' }]);
+  assert.equal(refused.effects[1], null); // the caller shows its generic error
+  assert.equal(refused.state.refused, false);
+  const timedOut = run(working, [empty(0),
+    { type: 'result', now: 300, ok: false, status: 409, error: 'hc timed out', kind: 'timeout' }]);
+  assert.deepEqual(timedOut.effects[1], { type: 'notice' });
+  assert.equal(view(timedOut.state, { now: 300 }).hint, TEXT.timeout);
+});
+
+test('in a dialog, an empty box reads Send (it presses Enter), with text Type into dialog', () => {
+  const s = initialState(blocked);
+  assert.equal(view(s, { now: 0, hasText: false }).label, 'Send');
+  assert.equal(view(s, { now: 0, hasText: false }).dialog, true);
+  assert.equal(view(s, { now: 0, hasText: true }).label, 'Type into dialog');
 });
 
 test('any change of status, kind, message or turn disarms', () => {
