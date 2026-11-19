@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { renderUnicodeCompact } from 'uqr';
 import { configDir, explicitHome, legacyConfigDir, loadConfig, migrateLegacyHome, validateConfig } from './config.js';
 import {
-  pidFilePath, probePort, processAlive, readPid, stopRunning, SERVER_NODE_FLAGS,
+  pidAlive, pidFilePath, probePort, processAlive, readPid, stopRunning, SERVER_NODE_FLAGS,
 } from './supervisor.js';
 import {
   installTask as realInstallTask, isNpxCachePath, isTaskInstalled, runCommand, runTask, TASK_NAME,
@@ -45,8 +45,10 @@ export const qrText = (url) => renderUnicodeCompact(url, { border: 4 });
 // Resolves true once the server is up: <home>\server.pid names a live process that is the one we
 // started (pid, when known) or was written after `since` (a task's server: pid unknown), AND the port
 // answers. A port answered by some other program is not "running". False after timeoutMs.
+// Liveness only (pidAlive, no image check): a pid we started, or a file written after `since`, is never
+// one left behind by an earlier run, and this polls (the image check costs a few tenths of a second).
 export async function waitForServer({
-  home, port, pid = null, since = 0, portAnswers = probePort, isAlive = processAlive, timeoutMs = 10000, pollMs = 250,
+  home, port, pid = null, since = 0, portAnswers = probePort, isAlive = pidAlive, timeoutMs = 10000, pollMs = 250,
 }) {
   const ours = () => {
     const file = pidFilePath(home);

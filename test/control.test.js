@@ -8,7 +8,7 @@ import {
   migrateFromHerdrRemote, legacyPending,
 } from '../src/control.js';
 import { saveConfig, DEFAULT_CONFIG, loadConfig } from '../src/config.js';
-import { pidFilePath, SERVER_NODE_FLAGS } from '../src/supervisor.js';
+import { pidFilePath, processAlive, stopRunning, SERVER_NODE_FLAGS } from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-ctl-'));
 const quiet = () => { const lines = []; return { log: (m) => lines.push(m), lines }; };
@@ -326,4 +326,37 @@ test('migrate: from the npx cache without an old task the folder moves (no task 
   const r = await migrateFromHerdrRemote({ env, log: () => {}, cliPath: NPX_CLI, installTask: async () => assert.fail('no') });
   assert.equal(r.mode, 'moved');
   assert.ok(fs.existsSync(to));
+});
+
+// The server died without removing server.pid (logoff) and Windows gave its pid to LockApp.exe.
+// process.pid is a live pid; the image name is injected.
+const lockApp = (pid) => processAlive(pid, { platform: 'win32', imageName: () => 'LockApp.exe' });
+
+test('stale pid: status says not running when server.pid names a live non-node process', async () => {
+  const home = tmp();
+  saveConfig(home, good);
+  fs.writeFileSync(pidFilePath(home), String(process.pid));
+  const s = await getStatus({ home, exec: fakeSchtasks().exec, isAlive: lockApp, portAnswers: async () => false });
+  assert.equal(s.running, false);
+  assert.equal(s.pid, null);
+  assert.match(formatStatus(s, { cmd: 'x' }), /^Running: +no$/m);
+});
+
+test('stale pid: restart treats a non-node pid as not running, removes the file and starts the server', async () => {
+  const home = tmp();
+  saveConfig(home, good);
+  fs.writeFileSync(pidFilePath(home), String(process.pid));
+  const out = quiet();
+  const started = [];
+  const r = await restart({
+    home, exec: fakeSchtasks().exec, log: out.log, cliPath: GLOBAL_CLI,
+    stop: (o) => stopRunning({ ...o, isAlive: lockApp }),
+    startDetachedImpl: (o) => { started.push(o); return { pid: 5150 }; },
+    waitUntilRunning: async () => true,
+  });
+  assert.equal(r.stopped, 'not running');
+  assert.equal(fs.existsSync(pidFilePath(home)), false);
+  assert.equal(out.lines[0], 'It was not running.');
+  assert.equal(started.length, 1);
+  assert.equal(r.ok, true);
 });
