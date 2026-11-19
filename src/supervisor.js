@@ -21,7 +21,9 @@ export const pidFilePath = (home) => path.join(home, 'server.pid');
 const stopRequestPath = (home) => path.join(home, 'server.stop');
 const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
 
-const runTasklist = (args) => execFileSync('tasklist', args, {
+// By full path, so a tasklist.exe in the current folder is never the one run.
+const TASKLIST = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tasklist.exe');
+const runTasklist = (args) => execFileSync(TASKLIST, args, {
   encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
 });
 
@@ -44,8 +46,15 @@ const NODE_IMAGES = new Set(['node.exe', path.basename(process.execPath).toLower
 // whose image is something else is a pid reused after the server died without removing server.pid
 // (a logoff or shutdown skips cleanup; e.g. LockApp.exe got it): not ours. When the image cannot be
 // told (tasklist failed or does not list it), the pid counts as alive, as before.
+// True when a process with this pid exists (any program). Cheap: for polling a pid already known to be ours.
+export const pidAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+};
+
+// processAlive runs tasklist (a few tenths of a second), so callers that poll check it once and then
+// poll with pidAlive: a live process keeps its image.
 export const processAlive = (pid, { platform = process.platform, imageName = windowsImageName } = {}) => {
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
+  if (!pidAlive(pid)) return false;
   if (platform !== 'win32') return true;
   const image = imageName(pid);
   return !image || NODE_IMAGES.has(image.toLowerCase());
@@ -290,7 +299,11 @@ export function superviseServer({
 // When nothing runs, the request is still left in <home>/server.stop: the start-at-login launcher
 // may be waiting to run a crashed server again, and it checks that file first (then quits). A
 // server that starts later clears it at claim (claimPidFile), so it never stops a later run.
-export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive = processAlive }) {
+// isAlive decides once whether the recorded pid is our server; stillAlive polls it while waiting
+// (default: the cheap pidAlive when isAlive is the default, else isAlive itself, for tests).
+export async function stopRunning({
+  home, waitMs = 15000, pollMs = 100, isAlive = processAlive, stillAlive = isAlive === processAlive ? pidAlive : isAlive,
+}) {
   const pidFile = pidFilePath(home);
   const notRunning = () => {
     try { fs.writeFileSync(stopRequestPath(home), 'stop'); } catch { /* no home: nothing to tell */ }
@@ -305,7 +318,7 @@ export async function stopRunning({ home, waitMs = 15000, pollMs = 100, isAlive 
   fs.writeFileSync(stopRequestPath(home), 'stop');
   const end = Date.now() + waitMs;
   while (Date.now() < end) {
-    if (!fs.existsSync(pidFile) || !isAlive(pid)) return 'stopped';
+    if (!fs.existsSync(pidFile) || !stillAlive(pid)) return 'stopped';
     await new Promise((r) => setTimeout(r, pollMs));
   }
   rmQuiet(stopRequestPath(home)); // don't let the stale request stop a later run by surprise

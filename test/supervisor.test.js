@@ -10,7 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   superviseServer, stopRunning, pidFilePath, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
-  SERVER_NODE_FLAGS, processAlive, windowsImageName,
+  SERVER_NODE_FLAGS, processAlive, pidAlive, windowsImageName,
 } from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-sup-'));
@@ -415,4 +415,23 @@ test('stale pid: claimPidFile replaces a fresh pid file held by a non-node proce
   assert.equal(r.ok, true);
   assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), String(process.pid));
   r.release();
+});
+
+test('stale pid: stopRunning checks the identity once, then polls the cheap liveness check', async () => {
+  const home = tmp();
+  fs.writeFileSync(pidFilePath(home), '424242');
+  let identity = 0;
+  let polls = 0;
+  const r = await stopRunning({
+    home, pollMs: 5, isAlive: () => { identity += 1; return true; }, stillAlive: () => { polls += 1; return polls < 3; },
+  });
+  assert.equal(r, 'stopped');
+  assert.equal(identity, 1);
+  assert.equal(polls, 3);
+});
+
+test('stale pid: real tasklist names this process node and processAlive accepts it', { skip: process.platform !== 'win32' }, () => {
+  assert.match(windowsImageName(process.pid), /node/i);
+  assert.equal(processAlive(process.pid), true);
+  assert.equal(pidAlive(process.pid), true);
 });
