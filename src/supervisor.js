@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { loadConfig } from './config.js';
-import { fork } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const EXIT_SETUP_REQUIRED = 78; // sysexits EX_CONFIG
@@ -21,8 +21,34 @@ export const pidFilePath = (home) => path.join(home, 'server.pid');
 const stopRequestPath = (home) => path.join(home, 'server.stop');
 const rmQuiet = (file) => { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } };
 
-export const processAlive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+const runTasklist = (args) => execFileSync('tasklist', args, {
+  encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+});
+
+// The image name (e.g. "node.exe") Windows lists for pid, '' when tasklist lists no such process, or
+// null when tasklist could not be run. `run` is overridable for tests.
+export function windowsImageName(pid, { run = runTasklist } = {}) {
+  let out;
+  try { out = String(run(['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'])); } catch { return null; }
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^"([^"]*)","(\d+)"/.exec(line.trim());
+    if (m && Number(m[2]) === pid) return m[1];
+  }
+  return '';
+}
+
+const NODE_IMAGES = new Set(['node.exe', path.basename(process.execPath).toLowerCase()]);
+
+// True when a process with this pid exists and could be our server. The server (supervisor, a
+// --foreground run, or the start-at-login launcher's) always runs as node, so on Windows a live pid
+// whose image is something else is a pid reused after the server died without removing server.pid
+// (a logoff or shutdown skips cleanup; e.g. LockApp.exe got it): not ours. When the image cannot be
+// told (tasklist failed or does not list it), the pid counts as alive, as before.
+export const processAlive = (pid, { platform = process.platform, imageName = windowsImageName } = {}) => {
+  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
+  if (platform !== 'win32') return true;
+  const image = imageName(pid);
+  return !image || NODE_IMAGES.has(image.toLowerCase());
 };
 
 export function readPid(file) {

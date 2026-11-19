@@ -10,7 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   superviseServer, stopRunning, pidFilePath, claimPidFile, alreadyRunningMessage, EXIT_SETUP_REQUIRED,
-  SERVER_NODE_FLAGS,
+  SERVER_NODE_FLAGS, processAlive, windowsImageName,
 } from '../src/supervisor.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hr-sup-'));
@@ -369,4 +369,50 @@ test('round1: a kill() that fails with a synchronous error is not retried in a l
 test('the stale-pid hint prints an absolute path even for a relative --home', () => {
   const msg = alreadyRunningMessage(424242, 'rel-home');
   assert.ok(msg.includes(`delete ${path.resolve('rel-home', 'server.pid')}`), msg);
+});
+
+// A live pid that Windows reused for another program after the server died without removing
+// server.pid (seen: LockApp.exe after a logoff). process.pid is alive; the image name is injected.
+const lockApp = (pid) => processAlive(pid, { platform: 'win32', imageName: () => 'LockApp.exe' });
+
+test('stale pid: windowsImageName reads the image of the pid from tasklist CSV output', () => {
+  const calls = [];
+  const run = (args) => { calls.push(args); return '"LockApp.exe","15732","Console","1","51,200 K"\r\n'; };
+  assert.equal(windowsImageName(15732, { run }), 'LockApp.exe');
+  assert.deepEqual(calls, [['/FI', 'PID eq 15732', '/FO', 'CSV', '/NH']]);
+  // A row for another pid, or tasklist's (localized) "no tasks" line: no such process.
+  assert.equal(windowsImageName(15732, { run: () => '"node.exe","157320","Console","1","1 K"\r\n' }), '');
+  assert.equal(windowsImageName(15732, { run: () => 'INFO: No tasks are running which match the specified criteria.\r\n' }), '');
+  assert.equal(windowsImageName(15732, { run: () => { throw new Error('ENOENT'); } }), null);
+});
+
+test('stale pid: processAlive on Windows counts a live pid only when it is node', () => {
+  const win = (imageName) => processAlive(process.pid, { platform: 'win32', imageName });
+  assert.equal(win(() => 'node.exe'), true);
+  assert.equal(win(() => 'NODE.EXE'), true);
+  assert.equal(win(() => 'LockApp.exe'), false);
+  assert.equal(win(() => null), true); // tasklist failed: as before, alive
+  assert.equal(win(() => ''), true); // not listed (just exited?): as before, alive
+  // Elsewhere, and for a dead pid, the image is never asked for.
+  const never = () => assert.fail('no image check');
+  assert.equal(processAlive(process.pid, { platform: 'linux', imageName: never }), true);
+  assert.equal(processAlive(2 ** 22 + 1, { platform: 'win32', imageName: never }), false);
+});
+
+test('stale pid: stopRunning treats a pid held by a non-node process as not running and removes the file', async () => {
+  const home = tmp();
+  fs.writeFileSync(pidFilePath(home), String(process.pid));
+  const t0 = Date.now();
+  assert.equal(await stopRunning({ home, isAlive: lockApp }), 'not running');
+  assert.ok(Date.now() - t0 < 1000); // no 15 s wait for LockApp to exit
+  assert.equal(fs.existsSync(pidFilePath(home)), false);
+});
+
+test('stale pid: claimPidFile replaces a fresh pid file held by a non-node process', async () => {
+  const home = tmp();
+  fs.writeFileSync(pidFilePath(home), String(process.ppid)); // a live pid, fresh, and the port answers
+  const r = await claimPidFile(home, { isAlive: lockApp, portAnswers: async () => true, port: 4999 });
+  assert.equal(r.ok, true);
+  assert.equal(fs.readFileSync(pidFilePath(home), 'utf8'), String(process.pid));
+  r.release();
 });
